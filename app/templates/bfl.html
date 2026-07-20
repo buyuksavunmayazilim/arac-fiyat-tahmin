@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}BFL Tahmin{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="eyebrow">Filo Araç Analizi</div>
+  <h1>BFL <span>Tahmin</span></h1>
+  <p>Şirket filo araçlarının tahmini satış değeri ile alış fiyatını karşılaştırın, kâr potansiyelini görün.</p>
+</div>
+
+<!-- Filtre -->
+<div class="card" style="margin-bottom:20px;">
+  <div class="card-title"><span class="dot"></span>Araç Seçimi</div>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+    <div class="form-group" style="flex:1;min-width:160px;">
+      <label class="form-label">Marka</label>
+      <select class="form-control" id="bfl-marka"><option value="">Seçiniz...</option></select>
+    </div>
+    <div class="form-group" style="flex:1;min-width:160px;">
+      <label class="form-label">Seri</label>
+      <select class="form-control" id="bfl-seri" disabled><option value="">Önce marka</option></select>
+    </div>
+    <div class="form-group" style="min-width:150px;">
+      <label class="form-label">Plaka Durumu <span class="opt">(opsiyonel)</span></label>
+      <select class="form-control" id="bfl-durum"><option value="">Tümü</option></select>
+    </div>
+    <div class="form-group" style="min-width:140px;">
+      <label class="form-label">Yıllık Faiz (%)</label>
+      <input class="form-control" type="number" id="bfl-faiz" placeholder="ör: 45" step="0.5" min="0">
+    </div>
+    <button class="btn btn-primary" id="bfl-list-btn">Araçları Listele</button>
+    <button class="btn btn-accent" id="bfl-batch-btn" style="display:none;">
+      <svg viewBox="0 0 20 20" fill="none" width="16" height="16"><path d="M10 2l2.5 5.5L18 8.5l-4 3.9 1 5.6L10 15.5l-5 2.5 1-5.6-4-3.9 5.5-.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+      Tümünü Tahmin Et
+    </button>
+  </div>
+</div>
+
+<!-- Yükleniyor -->
+<div id="bfl-loading" class="loading-overlay" style="display:none;">
+  <span class="spinner"></span> Tahminler hesaplanıyor...
+</div>
+
+<!-- Araç listesi (tahmin öncesi) -->
+<div class="card" id="bfl-vehicle-list" style="display:none;margin-bottom:20px;">
+  <div class="card-title"><span class="dot"></span>Bulunan Araçlar (<span id="bfl-count" style="font-family:var(--font-number);">0</span>)</div>
+  <div style="font-size:12.5px;color:var(--gray-500);margin-bottom:14px;">Tekil tahmin için araca tıklayın, ya da yukarıdan "Tümünü Tahmin Et"i kullanın.</div>
+  <input class="form-control" id="bfl-search" placeholder="🔍 Plakaya göre ara..." style="margin-bottom:12px;">
+  <div id="bfl-vehicles" style="display:flex;flex-direction:column;gap:8px;max-height:350px;overflow-y:auto;"></div>
+</div>
+
+<!-- Özet kartlar -->
+<div id="bfl-summary" style="display:none;margin-bottom:20px;">
+  <div class="stat-row">
+    <div class="stat-card"><div class="stat-label">Araç Sayısı</div><div class="stat-value" id="sum-count">–</div></div>
+    <div class="stat-card"><div class="stat-label">Toplam Alış</div><div class="stat-value" style="font-size:20px;" id="sum-alis">–</div></div>
+    <div class="stat-card"><div class="stat-label">Toplam Tahmini Satış</div><div class="stat-value" style="font-size:20px;" id="sum-tahmin">–</div></div>
+    <div class="stat-card"><div class="stat-label">Toplam Kâr</div><div class="stat-value" style="font-size:20px;" id="sum-kar">–</div></div>
+  </div>
+</div>
+
+<!-- İki kolon: grafik + tekil sonuç -->
+<div id="bfl-charts" style="display:none;margin-bottom:20px;">
+  <div class="analytics-dual-grid">
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>Kâr Dağılımı</div>
+      <div style="height:260px;"><canvas id="bfl-kar-chart"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>Alış vs Tahmini Satış</div>
+      <div style="height:260px;"><canvas id="bfl-compare-chart"></canvas></div>
+    </div>
+  </div>
+  <div class="card" id="bfl-valor-card" style="display:none;margin-top:20px;">
+    <div class="card-title"><span class="dot"></span>Valör Bazlı Fiyatlandırma (<span id="valor-rate">0</span>% yıllık faiz)</div>
+    <p style="font-size:12.5px;color:var(--gray-600);margin-bottom:14px;">
+      Min. 180 gün elde tutma kuralına göre, satışa kalan gün boyunca araç günlük bileşik faizle
+      hedef fiyata ulaşır. Aşağıda valörlü satılabilir araçların hedef ve maks. indirim toplamları:
+    </p>
+    <div id="bfl-valor-summary" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;"></div>
+    <div style="height:280px;"><canvas id="bfl-valor-chart"></canvas></div>
+  </div>
+</div>
+
+<!-- Sonuç tablosu -->
+<div class="card" id="bfl-table-card" style="display:none;">
+  <div class="card-title"><span class="dot"></span>Tahmin Sonuçları</div>
+  <div style="overflow-x:auto;">
+    <table id="bfl-table" style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--gray-200);text-align:left;">
+          <th style="padding:10px 8px;">Plaka</th>
+          <th style="padding:10px 8px;">Araç</th>
+          <th style="padding:10px 8px;">Yıl</th>
+          <th style="padding:10px 8px;text-align:right;">KM</th>
+          <th style="padding:10px 8px;text-align:right;">Alış</th>
+          <th style="padding:10px 8px;text-align:right;">Tahmini Satış Değeri</th>
+          <th style="padding:10px 8px;text-align:right;">Kâr</th>
+          <th style="padding:10px 8px;text-align:right;">Kâr %</th>
+        </tr>
+      </thead>
+      <tbody id="bfl-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='js/bfl.js') }}"></script>
+{% endblock %}

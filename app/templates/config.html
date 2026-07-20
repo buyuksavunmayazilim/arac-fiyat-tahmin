@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Hasar Config{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="eyebrow">Sistem Ayarları</div>
+  <h1>Hasar <span>Konfigürasyonu</span></h1>
+  <p>Her parçanın "değişen" durumundaki maksimum fiyat etkisini ve genel ayarları buradan yönetin.</p>
+</div>
+
+<div class="config-grid">
+
+  <!-- Sol: Parça etki yüzdeleri -->
+  <div class="card">
+    <div class="card-title"><span class="dot"></span>Parça Etki Yüzdeleri (Değişen)</div>
+    <p style="font-size:13px;color:var(--gray-600);margin-bottom:20px;">
+      Her parça <strong>değişen</strong> olduğunda tek başına düşürdüğü yüzde. Boyalı = ×0.6, Lokal Boyalı = ×0.35 ile ölçeklenir.
+    </p>
+    <div style="display:flex;flex-direction:column;gap:10px;" id="parts-section">
+      <div class="cfg-part" data-key="roof"                 data-label="Tavan"></div>
+      <div class="cfg-part" data-key="front_hood"           data-label="Ön Kaput"></div>
+      <div class="cfg-part" data-key="rear_hood"            data-label="Arka Kaput"></div>
+      <div class="cfg-part" data-key="front_right_door"     data-label="Sağ Ön Kapı"></div>
+      <div class="cfg-part" data-key="front_left_door"      data-label="Sol Ön Kapı"></div>
+      <div class="cfg-part" data-key="rear_right_door"      data-label="Sağ Arka Kapı"></div>
+      <div class="cfg-part" data-key="rear_left_door"       data-label="Sol Arka Kapı"></div>
+      <div class="cfg-part" data-key="front_right_mudguard" data-label="Sağ Ön Çamurluk"></div>
+      <div class="cfg-part" data-key="front_left_mudguard"  data-label="Sol Ön Çamurluk"></div>
+      <div class="cfg-part" data-key="rear_right_mudguard"  data-label="Sağ Arka Çamurluk"></div>
+      <div class="cfg-part" data-key="rear_left_mudguard"   data-label="Sol Arka Çamurluk"></div>
+      <div class="cfg-part" data-key="front_bumper"         data-label="Ön Tampon"></div>
+      <div class="cfg-part" data-key="rear_bumper"          data-label="Arka Tampon"></div>
+    </div>
+  </div>
+
+  <!-- Sağ: Genel ayarlar + önizleme -->
+  <div style="display:flex;flex-direction:column;gap:20px;">
+
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>Genel Ayarlar</div>
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <div class="cfg-general" data-key="top_n_parts"     data-label="Dikkate alınacak en kötü parça sayısı" data-step="1" data-hint="Örn: 3 → en kötü 3 parça toplanır"></div>
+        <div class="cfg-general" data-key="max_drop_pct"    data-label="Maksimum toplam düşüş (%)" data-step="0.5" data-hint="Hiçbir araç bu oranın üzerinde düşmez"></div>
+        <div class="cfg-general" data-key="heavy_damage_pct" data-label="Ağır hasar kaydı oranı (%)" data-step="0.5" data-hint="'Hasar kaydı var' işaretliyse uygulanır"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>Durum Çarpanları</div>
+      <p style="font-size:12.5px;color:var(--gray-500);margin-bottom:14px;">Parça durumuna göre etki ölçeği</p>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div class="cfg-factor" data-key="changed-new"      data-label="Değişen" data-color="var(--red)"></div>
+        <div class="cfg-factor" data-key="painted-new"      data-label="Boyalı" data-color="#C78F1A"></div>
+        <div class="cfg-factor" data-key="localpainted-new" data-label="Lokal Boyalı" data-color="var(--amber)"></div>
+      </div>
+    </div>
+
+    <div class="card" id="preview-card">
+      <div class="card-title"><span class="dot" style="background:var(--green)"></span>Canlı Önizleme</div>
+      <p style="font-size:12.5px;color:var(--gray-500);margin-bottom:14px;">1.883.000 TL baz fiyat üzerinden</p>
+      <div id="preview-table" style="display:flex;flex-direction:column;gap:6px;"></div>
+    </div>
+
+  </div>
+</div>
+
+<div style="margin-top:24px;display:flex;gap:12px;align-items:center;">
+  <button class="btn btn-accent btn-lg" id="save-btn">
+    <svg viewBox="0 0 20 20" fill="none" width="16" height="16"><path d="M4 13v2a1 1 0 001 1h10a1 1 0 001-1v-2M13 7l-3-3-3 3M10 4v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Kaydet
+  </button>
+  <button class="btn btn-outline" id="reset-btn">Varsayılanlara Sıfırla</button>
+  <span id="save-status" style="font-size:13px;color:var(--green);display:none;">✓ Kaydedildi</span>
+</div>
+
+<style>
+.cfg-row {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:10px 14px; background:var(--off-white);
+  border:1.5px solid var(--gray-200); border-radius:var(--radius); gap:12px;
+}
+.cfg-row-label { font-size:13px; font-weight:500; color:var(--gray-800); }
+.cfg-row-hint  { font-size:11.5px; color:var(--gray-500); margin-top:2px; }
+.cfg-input {
+  width:90px; padding:6px 10px; text-align:right;
+  border:1.5px solid var(--gray-200); border-radius:var(--radius-sm);
+  font-family:var(--font-display); font-size:14px; font-weight:600;
+  background:var(--white); outline:none; transition:var(--transition);
+}
+.cfg-input:focus { border-color:var(--navy-400); box-shadow:0 0 0 3px rgba(46,82,153,0.12); }
+.cfg-suffix { font-size:12px; color:var(--gray-500); margin-left:4px; }
+.preview-row {
+  display:flex; justify-content:space-between; align-items:center;
+  padding:7px 0; border-bottom:1px solid var(--gray-100); font-size:13px;
+}
+.preview-row:last-child { border-bottom:none; }
+</style>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='js/config.js') }}"></script>
+{% endblock %}

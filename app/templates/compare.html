@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Araç Karşılaştırma{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="eyebrow">Yan Yana Analiz</div>
+  <h1>Araç <span>Karşılaştırma</span></h1>
+  <p>İki farklı araç için fiyat tahmini ve SHAP karşılaştırması yapın.</p>
+</div>
+
+<div class="compare-grid" id="compare-area">
+
+  <!-- Sol araç -->
+  <div class="card" id="car-a-form">
+    <div class="card-title"><span class="dot"></span>1. Araç</div>
+    <div id="car-a-fields"></div>
+  </div>
+
+  <div class="compare-vs">VS</div>
+
+  <!-- Sağ araç -->
+  <div class="card" id="car-b-form">
+    <div class="card-title" style="--dot-color:var(--green)">
+      <span class="dot" style="background:var(--green)"></span>2. Araç
+    </div>
+    <div id="car-b-fields"></div>
+  </div>
+
+</div>
+
+<div style="margin-top:20px;display:flex;gap:12px;">
+  <button class="btn btn-accent btn-lg" id="compare-btn">
+    <svg viewBox="0 0 20 20" fill="none" width="16" height="16"><path d="M5 10h10M10 5l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Karşılaştır
+  </button>
+  <span id="compare-loading" style="display:none;align-items:center;gap:8px;font-size:13px;color:var(--gray-600);">
+    <span class="spinner"></span> Tahmin yapılıyor...
+  </span>
+</div>
+
+<!-- Sonuç -->
+<div id="compare-result" style="display:none;margin-top:32px;">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+
+    <!-- Sol sonuç -->
+    <div>
+      <div class="price-card" style="margin-bottom:16px;">
+        <div class="price-label">1. Araç Tahmini</div>
+        <div class="price-main"><span class="price-currency">₺</span><span id="cr-a-price">–</span></div>
+        <div class="price-range"><span>Aralık:</span><span class="range-badge" id="cr-a-range">–</span></div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="dot"></span>1. Araç SHAP</div>
+        <div id="shap-a"></div>
+      </div>
+    </div>
+
+    <!-- Sağ sonuç -->
+    <div>
+      <div class="price-card" style="background:linear-gradient(135deg,#0F5E3A 0%,#1A9F6E 100%);margin-bottom:16px;">
+        <div class="price-label">2. Araç Tahmini</div>
+        <div class="price-main"><span class="price-currency">₺</span><span id="cr-b-price">–</span></div>
+        <div class="price-range"><span>Aralık:</span><span class="range-badge" id="cr-b-range">–</span></div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="dot" style="background:var(--green)"></span>2. Araç SHAP</div>
+        <div id="shap-b"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Fark analizi -->
+  <div class="card" style="margin-top:20px;">
+    <div class="card-title"><span class="dot"></span>Fark Analizi</div>
+    <div id="compare-diff" style="font-size:14px;"></div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='js/compare.js') }}"></script>
+{% endblock %}

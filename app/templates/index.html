@@ -1,0 +1,259 @@
+{% extends "base.html" %}
+{% block title %}Araç Fiyat Tahmini{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="eyebrow">Yapay Zeka Destekli Fiyat Analizi</div>
+  <h1>Araç Fiyat <span>Tahmini</span></h1>
+  <p>Marka, model ve özelliklerini girerek aracınızın piyasa değerini ve tahmin aralığını öğrenin.</p>
+</div>
+
+<div class="predict-layout">
+
+  <!-- ── Sol: Form ─────────────────────────────────────────────────────────── -->
+  <div class="card" id="predict-form-card">
+    <div class="card-title"><span class="dot"></span>Araç Bilgileri</div>
+
+    <form id="predict-form">
+      <div class="form-grid">
+
+        <!-- Marka -->
+        <div class="form-group">
+          <label class="form-label">Marka <span class="opt">(zorunlu)</span></label>
+          <select class="form-control" id="f-marka" name="marka" required>
+            <option value="">Seçiniz...</option>
+          </select>
+        </div>
+
+        <!-- Seri -->
+        <div class="form-group">
+          <label class="form-label">Seri <span class="opt">(zorunlu)</span></label>
+          <select class="form-control" id="f-seri" name="seri" required disabled>
+            <option value="">Önce marka seçin</option>
+          </select>
+        </div>
+
+        <!-- Model -->
+        <div class="form-group">
+          <label class="form-label">Model <span class="opt">(zorunlu)</span></label>
+          <select class="form-control" id="f-model" name="model" required disabled>
+            <option value="">Önce seri seçin</option>
+          </select>
+        </div>
+
+        <!-- Yıl -->
+        <div class="form-group">
+          <label class="form-label">Model Yılı <span class="opt">(zorunlu)</span></label>
+          <select class="form-control" id="f-year" name="model_year" required>
+            <option value="">Seçiniz...</option>
+          </select>
+        </div>
+
+        <!-- KM -->
+        <div class="form-group">
+          <label class="form-label">Kilometre <span class="opt">(zorunlu)</span></label>
+          <input class="form-control" type="number" id="f-km" name="km" placeholder="ör: 85000" min="0" required>
+        </div>
+
+        <!-- Yakıt -->
+        <div class="form-group">
+          <label class="form-label">Yakıt Tipi <span class="opt">(zorunlu)</span></label>
+          <select class="form-control" id="f-fueloil" name="fueloil" required>
+            <option value="">Seçiniz...</option>
+          </select>
+        </div>
+
+        <!-- Vites -->
+        <div class="form-group">
+          <label class="form-label">Vites <span class="opt">(zorunlu)</span></label>
+          <select class="form-control" id="f-gear" name="gear" required>
+            <option value="">Seçiniz...</option>
+          </select>
+        </div>
+
+        <!-- Kasa -->
+        <div class="form-group">
+          <label class="form-label">Kasa Tipi <span class="opt">(opsiyonel)</span></label>
+          <select class="form-control" id="f-cartype" name="car_type">
+            <option value="">Seçiniz...</option>
+          </select>
+        </div>
+
+        <!-- Renk -->
+        <div class="form-group">
+          <label class="form-label">Renk <span class="opt">(opsiyonel)</span></label>
+          <select class="form-control" id="f-color" name="color">
+            <option value="">Seçiniz...</option>
+            <option>Beyaz</option><option>Siyah</option><option>Gri</option><option>Gümüş</option>
+            <option>Kırmızı</option><option>Mavi</option><option>Lacivert</option><option>Yeşil</option>
+            <option>Sarı</option><option>Kahverengi</option><option>Bej</option><option>Turuncu</option>
+          </select>
+        </div>
+
+        <!-- Ek seçenekler -->
+        <div class="form-section-title">Ek Özellikler</div>
+
+        <div class="form-group" style="grid-column:1/-1;">
+          <div style="display:flex;flex-wrap:wrap;gap:10px;">
+            <label class="checkbox-label">
+              <input type="checkbox" id="f-damage" name="damage_registered">
+              <span>Hasar kaydı var</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Hasar parça durumu — her zaman görünür -->
+        <div class="form-group" style="grid-column:1/-1;">
+          <label class="form-label">Parça Durumları <span class="opt">(işaretlenmeyenler Orijinal sayılır)</span></label>
+          <div id="damage-parts-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin-top:8px;">
+            <!-- JS ile doldurulur -->
+          </div>
+        </div>
+
+      </div><!-- /form-grid -->
+
+      <div style="margin-top:24px;display:flex;gap:12px;align-items:center;">
+        <button type="submit" class="btn btn-accent btn-lg" id="predict-btn">
+          <svg viewBox="0 0 20 20" fill="none"><path d="M10 2l2.5 5.5L18 8.5l-4 3.9 1 5.6L10 15.5l-5 2.5 1-5.6-4-3.9 5.5-.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          Tahmin Et
+        </button>
+        <button type="button" class="btn btn-outline" id="reset-btn">Temizle</button>
+        <span id="form-loading" style="display:none;"><span class="spinner"></span></span>
+      </div>
+    </form>
+  </div>
+
+  <!-- ── Sağ: Hızlı istatistikler ─────────────────────────────────────────── -->
+  <div style="display:flex;flex-direction:column;gap:16px;">
+    <div class="card" id="stats-panel">
+      <div class="card-title"><span class="dot"></span>Veri Tabanı</div>
+      <div id="stats-loading" class="loading-overlay" style="padding:24px;">
+        <span class="spinner"></span>
+      </div>
+      <div id="stats-content" style="display:none;">
+        <div style="display:flex;flex-direction:column;gap:14px;">
+          <div>
+            <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--gray-500);margin-bottom:3px;">Toplam İlan</div>
+            <div style="font-family:var(--font-number);font-size:28px;font-weight:700;color:var(--navy-800);" id="stat-total">–</div>
+          </div>
+          <div>
+            <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--gray-500);margin-bottom:3px;">Ortalama Fiyat</div>
+            <div style="font-family:var(--font-number);font-size:20px;font-weight:700;color:var(--navy-700);" id="stat-avg">–</div>
+          </div>
+          <div>
+            <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--gray-500);margin-bottom:3px;">Model Versiyonu</div>
+            <div style="font-size:13px;font-weight:500;color:var(--gray-600);" id="stat-model">–</div>
+          </div>
+          <div>
+            <div style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--gray-500);margin-bottom:3px;">Model R² Skoru</div>
+            <div style="font-family:var(--font-number);font-size:20px;font-weight:700;color:var(--green);" id="stat-r2">–</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>Nasıl Çalışır?</div>
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <div style="display:flex;gap:12px;align-items:flex-start;">
+          <div style="width:28px;height:28px;border-radius:50%;background:var(--navy-50);color:var(--navy-600);font-family:var(--font-display);font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">1</div>
+          <div style="font-size:13px;color:var(--gray-600);line-height:1.5;">Araç bilgilerini girin (kasa tipi ve renk hariç tüm alanlar zorunlu)</div>
+        </div>
+        <div style="display:flex;gap:12px;align-items:flex-start;">
+          <div style="width:28px;height:28px;border-radius:50%;background:var(--navy-50);color:var(--navy-600);font-family:var(--font-display);font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">2</div>
+          <div style="font-size:13px;color:var(--gray-600);line-height:1.5;">Yapay Zeka modelimiz sahibinden.com verileriyle tahmin üretir</div>
+        </div>
+        <div style="display:flex;gap:12px;align-items:flex-start;">
+          <div style="width:28px;height:28px;border-radius:50%;background:var(--navy-50);color:var(--navy-600);font-family:var(--font-display);font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">3</div>
+          <div style="font-size:13px;color:var(--gray-600);line-height:1.5;">Tahmini fiyat, güven aralığı, SHAP açıklaması ve en yakın ilanlar gösterilir</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /2-col grid -->
+
+<!-- ── Sonuç alanı (başta gizli, tahmin gelince açılır) ──────────────────── -->
+<div id="result-section" style="display:none;margin-top:32px;">
+
+  <!-- Fiyat kartı -->
+  <div class="result-grid-price">
+    <div class="price-card">
+      <div class="price-label">Tahmini Piyasa Değeri</div>
+      <div class="price-main">
+        <span class="price-currency">₺</span>
+        <span id="res-price">–</span>
+      </div>
+      <div class="price-range">
+        <span>Tahmin Aralığı:</span>
+        <span class="range-badge" id="res-range">–</span>
+      </div>
+      <div class="confidence-bar">
+        <div class="confidence-fill" id="res-confidence" style="width:0%"></div>
+      </div>
+      <div style="font-size:11.5px;color:var(--navy-200);margin-top:6px;" id="res-conf-text"></div>
+    </div>
+
+    <!-- Hasar etkisi -->
+    <div id="damage-effect-wrap" style="display:none;">
+      <div class="damage-effect-card">
+        <div class="damage-title">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none"><path d="M10 3l1.8 4 4.2.6-3 3 .7 4.4-3.7-2-3.7 2 .7-4.4-3-3 4.2-.6z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          Hasar Kaydı Etkisi
+        </div>
+        <!-- Etkili parçalar -->
+        <div id="de-top-parts" style="margin-bottom:10px;display:none;">
+          <div style="font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--amber);margin-bottom:6px;">Fiyatı En Çok Etkileyen Parçalar</div>
+          <div id="de-parts-list" style="display:flex;flex-direction:column;gap:4px;"></div>
+        </div>
+        <div id="de-heavy-msg" style="display:none;font-size:12.5px;color:var(--red);margin-bottom:10px;padding:8px 10px;background:rgba(214,59,59,0.08);border-radius:var(--radius-sm);">
+          ⚠️ Ağır hasar kaydı — piyasa verilerinden hesaplandı
+        </div>
+        <div class="damage-row">
+          <span class="damage-row-label">Hasar kayıtlı fiyat</span>
+          <span class="damage-row-val" style="color:var(--red);" id="de-with">–</span>
+        </div>
+        <div class="damage-row">
+          <span class="damage-row-label">Hasarsız olsaydı</span>
+          <span class="damage-row-val" style="color:var(--green);" id="de-without">–</span>
+        </div>
+        <div class="damage-row">
+          <span class="damage-row-label">Fiyat farkı</span>
+          <span class="damage-row-val" style="color:var(--amber);" id="de-impact">–</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SHAP + Benzer araçlar -->
+  <div class="result-grid-detail">
+    <!-- SHAP -->
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>Model Açıklaması (SHAP)</div>
+      <div style="font-size:12.5px;color:var(--gray-500);margin-bottom:16px;">Her özelliğin fiyata katkısı (₺)</div>
+      <div class="shap-bar-wrap" id="shap-bars"></div>
+    </div>
+
+    <!-- Benzer araçlar -->
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>En Benzer İlanlar</div>
+      <div id="similar-list" style="display:flex;flex-direction:column;gap:10px;"></div>
+    </div>
+  </div>
+
+  <!-- Yeni sorgu butonu -->
+  <div style="display:flex;gap:12px;">
+    <button class="btn btn-outline" id="new-query-btn">
+      <svg viewBox="0 0 20 20" fill="none"><path d="M3 10a7 7 0 1014 0 7 7 0 00-14 0M10 7v6M7 10h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      Yeni Sorgu
+    </button>
+    <a href="/history" class="btn btn-outline">Geçmiş Sorgular</a>
+    <a href="/analytics" class="btn btn-outline">Analitik Paneli</a>
+  </div>
+
+</div><!-- /result-section -->
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='js/index.js') }}"></script>
+{% endblock %}

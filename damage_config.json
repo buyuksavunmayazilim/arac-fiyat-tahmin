@@ -1,0 +1,40 @@
+{
+  "_comment": "Hasar config v2. Her parca icin max_etki_pct (changed durumunda). Durum carpani ile olceklenir.",
+
+  "_aciklama": {
+    "part_max_pct": "Parca DEGISEN(changed) iken tek basina dusurdugu max yuzde",
+    "status_factor": "Durum carpani: changed=1.0, painted=0.6, localpainted=0.35",
+    "top_n_parts": "En kotu kac parca toplanir",
+    "max_drop_pct": "Tum parcalarin toplam max dususu (mutlak tavan)",
+    "heavy_damage_pct": "Agir hasar kaydi isaretliyse uygulanan sabit oran"
+  },
+
+  "part_max_pct": {
+    "roof":                 9.0,
+    "front_hood":           7.0,
+    "rear_hood":            6.0,
+    "front_right_door":     4.5,
+    "front_left_door":      4.5,
+    "rear_right_door":      4.0,
+    "rear_left_door":       4.0,
+    "front_right_mudguard": 3.0,
+    "front_left_mudguard":  3.0,
+    "rear_right_mudguard":  2.5,
+    "rear_left_mudguard":   2.5,
+    "front_bumper":         2.0,
+    "rear_bumper":          2.0
+  },
+
+  "status_factor": {
+    "changed-new":      1.0,
+    "painted-new":      0.6,
+    "localpainted-new": 0.35,
+    "original-new":     0.0
+  },
+
+  "top_n_parts": 3,
+
+  "max_drop_pct": 18.0,
+
+  "heavy_damage_pct": 15.0
+}

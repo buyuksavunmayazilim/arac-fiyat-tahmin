@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Geçmiş Sorgular{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="eyebrow">Sorgu Geçmişi</div>
+  <h1>Geçmiş <span>Tahminler</span></h1>
+  <p>Oturumunuzda gerçekleştirilen tüm fiyat tahminleri.</p>
+</div>
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+  <div id="history-count" style="font-size:13.5px;color:var(--gray-600);"></div>
+  <a href="/" class="btn btn-accent">
+    <svg viewBox="0 0 20 20" fill="none" width="16" height="16"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    Yeni Tahmin
+  </a>
+</div>
+
+<div id="history-loading" class="loading-overlay"><span class="spinner"></span> Yükleniyor...</div>
+<div id="history-empty" style="display:none;text-align:center;padding:60px 20px;">
+  <div style="font-family:var(--font-display);font-size:18px;color:var(--gray-500);margin-bottom:8px;">Henüz tahmin yapılmamış</div>
+  <div style="color:var(--gray-400);font-size:14px;margin-bottom:20px;">Ana sayfadan araç bilgilerini girerek tahmin yapabilirsiniz.</div>
+  <a href="/" class="btn btn-accent">Tahmin Yap</a>
+</div>
+<div class="history-list" id="history-list"></div>
+
+<!-- Sayfalama -->
+<div id="pagination" style="display:flex;justify-content:center;gap:8px;margin-top:28px;"></div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='js/history.js') }}"></script>
+{% endblock %}
