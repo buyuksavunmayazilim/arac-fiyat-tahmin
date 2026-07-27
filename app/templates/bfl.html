@@ -58,7 +58,7 @@
   <div class="stat-row">
     <div class="stat-card"><div class="stat-label">Araç Sayısı</div><div class="stat-value" id="sum-count">–</div></div>
     <div class="stat-card"><div class="stat-label">Toplam Alış</div><div class="stat-value" style="font-size:20px;" id="sum-alis">–</div></div>
-    <div class="stat-card"><div class="stat-label">Toplam Tahmini Satış</div><div class="stat-value" style="font-size:20px;" id="sum-tahmin">–</div></div>
+    <div class="stat-card"><div class="card-title"><span class="dot"></span>Alış vs B2C / B2B Tahmini Satış</div><div class="stat-value" style="font-size:20px;" id="sum-tahmin">–</div></div>
     <div class="stat-card"><div class="stat-label">Toplam Kâr</div><div class="stat-value" style="font-size:20px;" id="sum-kar">–</div></div>
   </div>
 </div>
@@ -78,7 +78,7 @@
   <div class="card" id="bfl-valor-card" style="display:none;margin-top:20px;">
     <div class="card-title"><span class="dot"></span>Valör Bazlı Fiyatlandırma (<span id="valor-rate">0</span>% yıllık faiz)</div>
     <p style="font-size:12.5px;color:var(--gray-600);margin-bottom:14px;">
-      Min. 180 gün elde tutma kuralına göre, satışa kalan gün boyunca araç günlük bileşik faizle
+      Min. 185 gün elde tutma kuralına göre, satışa kalan gün boyunca araç günlük bileşik faizle
       hedef fiyata ulaşır. Aşağıda valörlü satılabilir araçların hedef ve maks. indirim toplamları:
     </p>
     <div id="bfl-valor-summary" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;"></div>
@@ -98,9 +98,15 @@
           <th style="padding:10px 8px;">Yıl</th>
           <th style="padding:10px 8px;text-align:right;">KM</th>
           <th style="padding:10px 8px;text-align:right;">Alış</th>
-          <th style="padding:10px 8px;text-align:right;">Tahmini Satış Değeri</th>
-          <th style="padding:10px 8px;text-align:right;">Kâr</th>
-          <th style="padding:10px 8px;text-align:right;">Kâr %</th>
+
+          <th style="padding:10px 8px;text-align:right;">B2C Tahmini Satış</th>
+          <th style="padding:10px 8px;text-align:right;">B2B Tahmini Satış</th>
+
+          <th style="padding:10px 8px;text-align:right;">B2C Kâr</th>
+          <th style="padding:10px 8px;text-align:right;">B2C Kâr %</th>
+
+          <th style="padding:10px 8px;text-align:right;">B2B Kâr</th>
+          <th style="padding:10px 8px;text-align:right;">B2B Kâr %</th>
         </tr>
       </thead>
       <tbody id="bfl-tbody"></tbody>

@@ -617,12 +617,12 @@ def reset_damage_config():
 BFL_ALLOWED_DURUMLAR = ["KSK", "USK", "Havuz", "Tahsis", "0 km Stok"]
 
 # Araç minimum elde tutma süresi (gün)
-BFL_MIN_HOLD_DAYS = 180
+BFL_MIN_HOLD_DAYS = 185
 
 def _calc_valor_pricing(tahmini_satis: float, annual_rate_pct: float, alis_tarihi_iso: str) -> dict:
     """
     Valör bazlı fiyatlandırma.
-    - Min. elde tutma: 180 gün → en erken satış = alış + 180 gün
+    - Min. elde tutma: 185 gün → en erken satış = alış + 185 gün
     - Kalan gün > 0 ise araç valörlü satılabilir
     - Kalan gün sonunda araç günlük bileşik faizle HEDEF fiyata ulaşır
     - Valörlü satış bu hedef fiyat üzerinden hesaplanır
@@ -787,26 +787,50 @@ def bfl_predict(filo_id):
         db.session.rollback()
         return jsonify({"error": f"Tahmin hatası: {str(e)}"}), 500
 
-    tahmini_satis = result["predicted_price"]
-    alis_fiyati   = filo_dict.get("alis_fiyati") or 0
+    b2c_fiyat = result["predicted_price"]
+    b2b_fiyat = b2c_fiyat * 0.90
+    alis_fiyati = filo_dict.get("alis_fiyati") or 0
 
-    kar = tahmini_satis - alis_fiyati if alis_fiyati else None
-    kar_pct = (kar / alis_fiyati * 100) if (alis_fiyati and kar is not None) else None
+    b2c_kar = b2c_fiyat - alis_fiyati if alis_fiyati else None
+    b2c_kar_pct = (
+        b2c_kar / alis_fiyati * 100
+        if alis_fiyati and b2c_kar is not None
+        else None
+    )
+
+    b2b_kar = b2b_fiyat - alis_fiyati if alis_fiyati else None
+    b2b_kar_pct = (
+        b2b_kar / alis_fiyati * 100
+        if alis_fiyati and b2b_kar is not None
+        else None
+    )
 
     # Valör fiyatlandırma (faiz oranı verildiyse)
-    valor = _calc_valor_pricing(tahmini_satis, annual_rate, filo_dict.get("alis_tarihi")) if annual_rate > 0 else None
+    valor = _calc_valor_pricing(b2c_fiyat, annual_rate, filo_dict.get("alis_tarihi")) if annual_rate > 0 else None
 
     return jsonify({
         "success": True,
         "arac": filo_dict,
-        "tahmini_satis":   tahmini_satis,
-        "price_lower":     result["price_lower"],
-        "price_upper":     result["price_upper"],
-        "alis_fiyati":     alis_fiyati,
-        "kar":             round(kar, -3) if kar is not None else None,
-        "kar_pct":         round(kar_pct, 1) if kar_pct is not None else None,
-        "model_group":     result.get("model_group", "genel"),
-        "valor":           valor,
+
+        "tahmini_satis": round(b2c_fiyat, -3),
+        "b2c_fiyat": round(b2c_fiyat, -3),
+        "b2b_fiyat": round(b2b_fiyat, -3),
+
+        "price_lower": result["price_lower"],
+        "price_upper": result["price_upper"],
+        "alis_fiyati": alis_fiyati,
+
+        "kar": round(b2c_kar, -3) if b2c_kar is not None else None,
+        "kar_pct": round(b2c_kar_pct, 1) if b2c_kar_pct is not None else None,
+
+        "b2c_kar": round(b2c_kar, -3) if b2c_kar is not None else None,
+        "b2c_kar_pct": round(b2c_kar_pct, 1) if b2c_kar_pct is not None else None,
+
+        "b2b_kar": round(b2b_kar, -3) if b2b_kar is not None else None,
+        "b2b_kar_pct": round(b2b_kar_pct, 1) if b2b_kar_pct is not None else None,
+
+        "model_group": result.get("model_group", "genel"),
+        "valor": valor,
         "annual_rate_pct": annual_rate,
     })
 
@@ -848,18 +872,31 @@ def bfl_predict_batch():
             db.session.rollback()
             continue
 
-        tahmini = r["predicted_price"]
-        alis    = fd.get("alis_fiyati") or 0
-        kar     = (tahmini - alis) if alis else None
-        kar_pct = (kar / alis * 100) if (alis and kar is not None) else None
+        b2c_fiyat = r["predicted_price"]
+        b2b_fiyat = b2c_fiyat * 0.90
+        alis = fd.get("alis_fiyati") or 0
+
+        b2c_kar = b2c_fiyat - alis if alis else None
+        b2c_kar_pct = (
+            b2c_kar / alis * 100
+            if alis and b2c_kar is not None
+            else None
+        )
+
+        b2b_kar = b2b_fiyat - alis if alis else None
+        b2b_kar_pct = (
+            b2b_kar / alis * 100
+            if alis and b2b_kar is not None
+            else None
+        )
 
         if alis:
             toplam_alis   += alis
-            toplam_tahmin += tahmini
-            if kar and kar > 0: karli += 1
-            elif kar and kar < 0: zararli += 1
+            toplam_tahmin += b2c_fiyat
+            if b2c_kar and b2c_kar > 0: karli += 1
+            elif b2c_kar and b2c_kar < 0: zararli += 1
 
-        valor = _calc_valor_pricing(tahmini, annual_rate, fd.get("alis_tarihi")) if annual_rate > 0 else None
+        valor = _calc_valor_pricing(b2c_fiyat, annual_rate, fd.get("alis_tarihi")) if annual_rate > 0 else None
 
         results.append({
             "id":            fd["id"],
@@ -872,13 +909,25 @@ def bfl_predict_batch():
             "son_km":        fd["son_km"],
             "yakit_tipi":    fd["yakit_tipi"],
             "vites_tipi":    fd["vites_tipi"],
-            "alis_fiyati":   alis,
-            "tahmini_satis": tahmini,
-            "price_lower":   r["price_lower"],
-            "price_upper":   r["price_upper"],
-            "kar":           round(kar, -3) if kar is not None else None,
-            "kar_pct":       round(kar_pct, 1) if kar_pct is not None else None,
-            "valor":         valor,
+            "alis_fiyati": alis,
+
+            "tahmini_satis": round(b2c_fiyat, -3),
+            "b2c_fiyat": round(b2c_fiyat, -3),
+            "b2b_fiyat": round(b2b_fiyat, -3),
+
+            "price_lower": r["price_lower"],
+            "price_upper": r["price_upper"],
+
+            "kar": round(b2c_kar, -3) if b2c_kar is not None else None,
+            "kar_pct": round(b2c_kar_pct, 1) if b2c_kar_pct is not None else None,
+
+            "b2c_kar": round(b2c_kar, -3) if b2c_kar is not None else None,
+            "b2c_kar_pct": round(b2c_kar_pct, 1) if b2c_kar_pct is not None else None,
+
+            "b2b_kar": round(b2b_kar, -3) if b2b_kar is not None else None,
+            "b2b_kar_pct": round(b2b_kar_pct, 1) if b2b_kar_pct is not None else None,
+
+            "valor": valor,
         })
 
     toplam_kar = toplam_tahmin - toplam_alis
