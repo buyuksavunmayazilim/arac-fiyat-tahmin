@@ -3,9 +3,10 @@ Flask API Blueprint — tüm JSON endpoint'leri
 """
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from flask import Blueprint, request, jsonify, session
-from sqlalchemy import func, desc, and_, cast, Numeric, Float, text
+from sqlalchemy import func, desc, and_, cast, Numeric, Float, text, Date
+
 import numpy as np
 
 from app import db
@@ -619,6 +620,50 @@ BFL_ALLOWED_DURUMLAR = ["KSK", "USK", "Havuz", "Tahsis", "0 km Stok"]
 # Araç minimum elde tutma süresi (gün)
 BFL_MIN_HOLD_DAYS = 185
 
+def _apply_bfl_filters(q, marka=None, seri=None, durum=None, satis_ayi=None):
+    """
+    Ortak BFL filtrelerini uygular.
+
+    satis_ayi formatı: YYYY-MM
+    Araç, alış tarihinden 185 gün sonra satışa hazır kabul edilir.
+    """
+    
+
+    if marka:
+        q = q.filter(FiloArac.marka == marka)
+
+    if seri:
+        q = q.filter(FiloArac.seri == seri)
+
+    if durum:
+        q = q.filter(FiloArac.plaka_durum == durum)
+
+    if satis_ayi:
+        try:
+            year, month = map(int, satis_ayi.split("-"))
+
+            ay_baslangic = date(year, month, 1)
+
+            if month == 12:
+                sonraki_ay = date(year + 1, 1, 1)
+            else:
+                sonraki_ay = date(year, month + 1, 1)
+
+            en_erken_satis_expr = (
+                cast(FiloArac.alis_tarihi, Date)
+                + text(f"INTERVAL '{BFL_MIN_HOLD_DAYS} days'")
+            )
+
+            q = q.filter(
+                FiloArac.alis_tarihi.isnot(None),
+                en_erken_satis_expr >= ay_baslangic,
+                en_erken_satis_expr < sonraki_ay,
+            )
+        except (ValueError, TypeError):
+            pass
+
+    return q
+
 def _calc_valor_pricing(tahmini_satis: float, annual_rate_pct: float, alis_tarihi_iso: str) -> dict:
     """
     Valör bazlı fiyatlandırma.
@@ -710,34 +755,59 @@ def bfl_options():
 
 @api_bp.route("/bfl/series", methods=["GET"])
 def bfl_series():
-    """Markaya göre seri listesi."""
-    marka = request.args.get("marka", "")
-    series = [
-        r[0] for r in db.session.query(FiloArac.seri)
+    """Markaya göre veya tüm markalar için seri listesi."""
+    marka = request.args.get("marka", "").strip()
+
+    q = (
+        db.session.query(FiloArac.seri)
         .filter(
-            FiloArac.marka == marka,
             FiloArac.plaka_durum.in_(BFL_ALLOWED_DURUMLAR),
             FiloArac.seri.isnot(None),
         )
-        .distinct().order_by(FiloArac.seri).all()
+    )
+
+    if marka:
+        q = q.filter(FiloArac.marka == marka)
+
+    series = [
+        row[0]
+        for row in q.distinct()
+        .order_by(FiloArac.seri)
+        .all()
     ]
+
     return jsonify({"series": series})
 
 
 @api_bp.route("/bfl/vehicles", methods=["GET"])
 def bfl_vehicles():
-    """Marka/seri'ye göre araç (plaka) listesi."""
-    marka = request.args.get("marka")
-    seri  = request.args.get("seri")
-    durum = request.args.get("durum")  # opsiyonel
+    """Marka, seri, durum ve satış ayına göre araç listesi."""
+    marka = request.args.get("marka", "").strip()
+    seri = request.args.get("seri", "").strip()
+    durum = request.args.get("durum", "").strip()
+    satis_ayi = request.args.get("satis_ayi", "").strip()
 
-    q = FiloArac.query.filter(FiloArac.plaka_durum.in_(BFL_ALLOWED_DURUMLAR))
-    if marka: q = q.filter(FiloArac.marka == marka)
-    if seri:  q = q.filter(FiloArac.seri == seri)
-    if durum: q = q.filter(FiloArac.plaka_durum == durum)
+    q = FiloArac.query.filter(
+        FiloArac.plaka_durum.in_(BFL_ALLOWED_DURUMLAR)
+    )
 
-    vehicles = q.order_by(FiloArac.plaka).all()
-    return jsonify({"vehicles": [v.to_dict() for v in vehicles]})
+    q = _apply_bfl_filters(
+        q,
+        marka=marka,
+        seri=seri,
+        durum=durum,
+        satis_ayi=satis_ayi,
+    )
+
+    vehicles = q.order_by(
+        FiloArac.marka,
+        FiloArac.seri,
+        FiloArac.plaka,
+    ).all()
+
+    return jsonify({
+        "vehicles": [vehicle.to_dict() for vehicle in vehicles]
+    })
 
 
 def _normalize_for_prediction(filo_arac: dict) -> dict:
@@ -845,16 +915,24 @@ def bfl_predict_batch():
     marka = data.get("marka")
     seri  = data.get("seri")
     durum = data.get("durum")
+    satis_ayi = data.get("satis_ayi", "").strip()
     annual_rate = float(data.get("annual_rate_pct", 0) or 0)
 
     predictor = get_predictor()
     if not predictor.is_loaded():
         return jsonify({"error": "Model henüz eğitilmemiş"}), 503
 
-    q = FiloArac.query.filter(FiloArac.plaka_durum.in_(BFL_ALLOWED_DURUMLAR))
-    if marka: q = q.filter(FiloArac.marka == marka)
-    if seri:  q = q.filter(FiloArac.seri == seri)
-    if durum: q = q.filter(FiloArac.plaka_durum == durum)
+    q = FiloArac.query.filter(
+        FiloArac.plaka_durum.in_(BFL_ALLOWED_DURUMLAR)
+    )
+
+    q = _apply_bfl_filters(
+        q,
+        marka=marka,
+        seri=seri,
+        durum=durum,
+        satis_ayi=satis_ayi,
+    )
 
     vehicles = q.all()
     results = []

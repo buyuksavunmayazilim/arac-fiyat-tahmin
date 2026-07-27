@@ -18,6 +18,7 @@ let currentVehicles = [];
 document.addEventListener('DOMContentLoaded', () => {
   loadOptions();
   setupCascade();
+  loadSalesMonthOptions();
 
   document
     .getElementById('bfl-list-btn')
@@ -98,13 +99,11 @@ function setupCascade() {
   const markaEl = document.getElementById('bfl-marka');
   const seriEl = document.getElementById('bfl-seri');
 
-  markaEl.addEventListener('change', async () => {
+  async function loadSeries() {
     const marka = markaEl.value;
 
     seriEl.innerHTML = '<option value="">Tümü</option>';
-    seriEl.disabled = !marka;
-
-    if (!marka) return;
+    seriEl.disabled = true;
 
     try {
       const response = await fetch(
@@ -112,10 +111,6 @@ function setupCascade() {
       );
 
       const data = await response.json();
-
-      if (!response.ok || data.error) {
-        throw new Error(data.error || 'Seri seçenekleri alınamadı');
-      }
 
       (data.series || []).forEach(seri => {
         const option = document.createElement('option');
@@ -126,10 +121,59 @@ function setupCascade() {
     } catch (error) {
       console.error(error);
       showToast('Seri seçenekleri yüklenemedi', 'error');
+    } finally {
+      seriEl.disabled = false;
     }
-  });
+  }
+
+  markaEl.addEventListener('change', loadSeries);
+
+  // Sayfa açıldığında tüm serileri getir
+  loadSeries();
 }
 
+function loadSalesMonthOptions() {
+  const select = document.getElementById('bfl-satis-ayi');
+  if (!select) return;
+
+  const monthNames = [
+    'Ocak',
+    'Şubat',
+    'Mart',
+    'Nisan',
+    'Mayıs',
+    'Haziran',
+    'Temmuz',
+    'Ağustos',
+    'Eylül',
+    'Ekim',
+    'Kasım',
+    'Aralık',
+  ];
+
+  const today = new Date();
+
+  for (let i = 0; i <= 6; i += 1) {
+    const date = new Date(
+      today.getFullYear(),
+      today.getMonth() + i,
+      1
+    );
+
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+
+    const option = document.createElement('option');
+    option.value = `${year}-${month}`;
+
+    option.textContent =
+      i === 0
+        ? `Bu Ay — ${monthNames[date.getMonth()]} ${year}`
+        : `${monthNames[date.getMonth()]} ${year}`;
+
+    select.appendChild(option);
+  }
+}
 
 // ── Araç listeleme ────────────────────────────────────────────────────────────
 
@@ -137,17 +181,19 @@ async function listVehicles() {
   const marka = document.getElementById('bfl-marka').value;
   const seri = document.getElementById('bfl-seri').value;
   const durum = document.getElementById('bfl-durum').value;
+  const satisAyi = document.getElementById('bfl-satis-ayi')?.value || '';
 
-  if (!marka) {
-    showToast('En az marka seçiniz', 'error');
-    return;
-  }
+  // if (!marka) {
+  //   showToast('En az marka seçiniz', 'error');
+  //   return;
+  // }
 
   const params = new URLSearchParams();
-  params.append('marka', marka);
 
+  if (marka) params.append('marka', marka);
   if (seri) params.append('seri', seri);
   if (durum) params.append('durum', durum);
+  if (satisAyi) params.append('satis_ayi', satisAyi);
 
   try {
     const response = await fetch(`/api/bfl/vehicles?${params.toString()}`);
@@ -410,6 +456,7 @@ async function predictBatch() {
   const seri = document.getElementById('bfl-seri').value;
   const durum = document.getElementById('bfl-durum').value;
   const faiz = getFaizOrani();
+  const satisAyi = document.getElementById('bfl-satis-ayi')?.value || '';
 
   const loading = document.getElementById('bfl-loading');
   const vehicleList = document.getElementById('bfl-vehicle-list');
@@ -427,6 +474,7 @@ async function predictBatch() {
         marka,
         seri,
         durum,
+        satis_ayi: satisAyi,
         annual_rate_pct: faiz,
       }),
     });
