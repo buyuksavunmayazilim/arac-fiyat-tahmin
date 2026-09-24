@@ -12,6 +12,7 @@ services:
       retries: 10
 
   web:
+    image: registry.sisasoft.com.tr/buyuk-tahmin/arac-fiyat-tahmin-web:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -38,6 +39,9 @@ services:
 
   worker:
     image: registry.sisasoft.com.tr/buyuk-tahmin/arac-fiyat-tahmin-worker:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
       redis:
@@ -59,6 +63,9 @@ services:
 
   trainer:
     image: registry.sisasoft.com.tr/buyuk-tahmin/arac-fiyat-tahmin-trainer:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     restart: "no"
     depends_on:
       redis:
@@ -75,26 +82,6 @@ services:
     volumes:
       - ml_models:/home/arac/ml/models
     command: python ml/train.py
-
-  filo_importer:
-    #image: registry.sisasoft.com.tr/buyuk-tahmin/arac-fiyat-tahmin-filo-importer:latest
-    build:
-      context: ./filo_importer
-      dockerfile: Dockerfile
-    restart: "no"
-    env_file:
-      - .env
-    environment:
-      FILO_FILE: /data/Filo Takip Listesi-13-05-2026 1.xlsx
-      HASAR_FILE: /data/Hasar Listesi 13-05-2026.xlsx
-      SOURCE_DATE: "2026-05-13"
-      RECREATE_TABLE_ON_IMPORT: "true"
-      SCHEMA_FILE: /sql/01_create_filo_arac_master.sql
-      PYTHONPATH: /app
-    volumes:
-      - ./filo_importer/data:/data
-      - ./filo_importer/sql:/sql
-    command: python import_filo_arac_master.py
 
 volumes:
   ml_models:

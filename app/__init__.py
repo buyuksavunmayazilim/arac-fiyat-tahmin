@@ -15,9 +15,23 @@ def create_app():
     app = Flask(__name__, template_folder="templates", static_folder="static")
 
     app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev-secret-key")
-    app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv(
+
+    database_url = os.getenv(
         "DATABASE_URL", "postgresql://postgres:arac2024@localhost:5432/arac_tahmin"
     )
+    app.config["SQLALCHEMY_DATABASE_URI"] = database_url
+
+    app.config["SQLALCHEMY_BINDS"] = {
+        "fleet": os.getenv("FLEET_DATABASE_URL", app.config["SQLALCHEMY_DATABASE_URI"]),
+    }
+
+    # ── YENİ: filo araçları (vehicles tablosu) için ayrı bind ─────────────────
+    # Aynı DB ise FLEET_DATABASE_URL'i DATABASE_URL ile aynı ver.
+    # Ayrı DB ise farklı bir bağlantı stringi ver.
+    app.config["SQLALCHEMY_BINDS"] = {
+        "fleet": os.getenv("FLEET_DATABASE_URL", database_url),
+    }
+
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
         "pool_recycle": 300,
@@ -37,8 +51,10 @@ def create_app():
 
     from app.api.routes import api_bp
     from app.api.views import views_bp
+    from app.api.predict_api import predict_api_bp
 
     app.register_blueprint(api_bp, url_prefix="/api")
+    app.register_blueprint(predict_api_bp, url_prefix="/api/v1")
     app.register_blueprint(views_bp)
 
     return app

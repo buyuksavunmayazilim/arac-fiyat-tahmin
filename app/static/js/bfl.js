@@ -327,16 +327,18 @@ async function listVehicles() {
             ₺${fmt(vehicle.alis_fiyati)}
           </div>
 
-          <button
-            class="btn btn-sm btn-outline"
-            style="margin-top:6px;"
-            onclick="
-              event.stopPropagation();
-              predictSingle(${vehicle.id}, this)
-            "
-          >
-            Tahmin Et
-          </button>
+          ${
+            vehicle.dusuk_guven
+              ? `<div
+                  title="${(vehicle.guven_sebebi || 'Yetersiz veri').replace(/"/g, '&quot;')}"
+                  style="margin-top:6px;font-size:11px;color:var(--gray-500);border:1px dashed var(--gray-300);border-radius:6px;padding:4px 8px;white-space:nowrap;cursor:not-allowed;"
+                >Veri yetersiz</div>`
+              : `<button
+                  class="btn btn-sm btn-outline"
+                  style="margin-top:6px;"
+                  onclick="event.stopPropagation(); predictSingle(${vehicle.id}, this)"
+                >Tahmin Et</button>`
+          }
         </div>
       `;
 
@@ -529,8 +531,10 @@ function renderSummary(ozet) {
 
   summary.style.display = 'block';
 
-  document.getElementById('sum-count').textContent =
-    ozet.arac_sayisi;
+  const countEl = document.getElementById('sum-count');
+  countEl.innerHTML = (ozet.dusuk_guven_arac > 0)
+    ? `${ozet.arac_sayisi} <span style="font-size:12px;color:var(--gray-500);font-weight:500;">(${ozet.dusuk_guven_arac} veri yetersiz)</span>`
+    : `${ozet.arac_sayisi}`;
 
   document.getElementById('sum-alis').textContent =
     `₺${fmt(ozet.toplam_alis)}`;
@@ -581,6 +585,27 @@ function renderResultsTable(results) {
 
 
 function appendMainResultRow(tbody, result) {
+  // Düşük güven → tahmin/kâr yerine "veri yetersiz"
+  if (result.dusuk_guven) {
+    const row = document.createElement('tr');
+    row.style.cssText = `border-bottom:1px solid var(--gray-100);background:#fffaf5;`;
+    row.innerHTML = `
+      <td style="padding:10px 8px;font-family:var(--font-number);font-weight:600;white-space:nowrap;">${result.plaka || '—'}</td>
+      <td style="padding:10px 8px;min-width:180px;">
+        ${result.marka || ''} ${result.seri || ''}
+        <div style="font-size:11px;color:var(--gray-500);margin-top:2px;">${result.model || ''}</div>
+      </td>
+      <td style="padding:10px 8px;white-space:nowrap;">${result.model_yili || '—'}</td>
+      <td style="padding:10px 8px;text-align:right;white-space:nowrap;font-family:var(--font-number);">${result.son_km != null ? fmt(result.son_km) : '—'}</td>
+      <td style="padding:10px 8px;text-align:right;white-space:nowrap;font-family:var(--font-number);">₺${fmt(result.alis_fiyati)}</td>
+      <td colspan="6" style="padding:10px 8px;text-align:center;color:var(--gray-500);font-size:12px;">
+        <span title="${(result.guven_sebebi || '').replace(/"/g, '&quot;')}" style="border:1px dashed var(--gray-300);border-radius:6px;padding:3px 10px;">Tahmin için veri yetersiz</span>
+      </td>
+    `;
+    tbody.appendChild(row);
+    return;
+  }
+
   const b2cFiyat =
     result.b2c_fiyat ??
     result.tahmini_satis ??
@@ -726,6 +751,7 @@ function appendMainResultRow(tbody, result) {
 
 
 function appendValorDetailRow(tbody, result) {
+  if (result.dusuk_guven) return;
   const valor = result.valor;
 
   if (!valor) return;
@@ -942,15 +968,18 @@ function appendValorDetailRow(tbody, result) {
 function renderCharts(results) {
   const charts = document.getElementById('bfl-charts');
 
-  if (results.length <= 1) {
+  // Grafikler sadece güvenilir araçları gösterir (düşük güvenliler hariç)
+  const guvenilir = results.filter(r => !r.dusuk_guven);
+
+  if (guvenilir.length <= 1) {
     charts.style.display = 'none';
     return;
   }
 
   charts.style.display = 'block';
 
-  renderKarChart(results);
-  renderCompareChart(results);
+  renderKarChart(guvenilir);
+  renderCompareChart(guvenilir);
 }
 
 
@@ -1166,6 +1195,7 @@ function renderValorArea(results, valorOzet, faiz) {
 
   renderValorChart(
     results.filter(result =>
+      !result.dusuk_guven &&
       result.valor &&
       result.valor.valorlu
     )

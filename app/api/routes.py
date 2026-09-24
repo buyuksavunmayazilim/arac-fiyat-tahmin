@@ -10,8 +10,16 @@ from sqlalchemy import func, desc, and_, cast, Numeric, Float, text, Date
 import numpy as np
 
 from app import db
-from app.models import Vehicle, PriceHistory, QueryHistory, ModelMetadata, FiloArac
+from app.models import Vehicle, PriceHistory, QueryHistory, ModelMetadata, FleetVehicle
 from ml.predictor import get_predictor
+
+from settings import (
+    BFL_ALLOWED_DURUMLAR,
+    BFL_MIN_HOLD_DAYS,
+    BFL_MIN_COMPARABLE_LISTINGS,
+    B2B_FACTOR,
+    map_fleet_naming,
+)
 
 api_bp = Blueprint("api", __name__)
 
@@ -613,12 +621,59 @@ def reset_damage_config():
 
 
 # ── BFL Tahmin (Filo Araçları) ───────────────────────────────────────────────
+#
+# NOT: Bu bölüm artık güncel `vehicles` tablosundan (FleetVehicle) okur.
+# FleetVehicle attribute adları (marka, seri, plaka_durum, alis_tarihi...)
+#
+# ⚠️ `vehicles.plate_status` değerleri eski tablodan farklı olabilir. Doğrula:
+#     SELECT DISTINCT plate_status FROM vehicles ORDER BY 1;
+# ve aşağıdaki listeyi gerçek değerlere göre güncelle.
 
-# Tahmin yapılacak plaka durumları
-BFL_ALLOWED_DURUMLAR = ["KSK", "USK", "Havuz", "Tahsis", "0 km Stok"]
+def _count_comparable_listings(marka, seri, model_yili):
+    """araclar (ilan) tablosunda marka+seri+yıl için fiyatlı ilan sayısı."""
+    if not marka:
+        return 0
+    try:
+        q = Vehicle.query.filter(
+            Vehicle.marka.ilike(marka),
+            Vehicle.price.isnot(None), Vehicle.price != "",
+        )
+        if seri:
+            q = q.filter(Vehicle.seri.ilike(seri))
+        if model_yili:
+            q = q.filter(Vehicle.model_year == str(model_yili))
+        return q.count()
+    except Exception:
+        db.session.rollback()
+        return 0
 
-# Araç minimum elde tutma süresi (gün)
-BFL_MIN_HOLD_DAYS = 185
+
+def _degerlendir_guven(model_group, ilan_sayisi):
+    """Tahmin güvenini değerlendirir."""
+    sebepler = []
+    mg = (model_group or "").strip()
+    if mg in ("", "__general__", "genel"):
+        sebepler.append("Bu araç için özel model yok (genel tahmin kullanıldı)")
+    if ilan_sayisi < BFL_MIN_COMPARABLE_LISTINGS:
+        sebepler.append(f"Yetersiz piyasa verisi ({ilan_sayisi} benzer ilan)")
+    return {
+        "dusuk_guven": bool(sebepler),
+        "guven_sebebi": "; ".join(sebepler) if sebepler else None,
+        "benzer_ilan_sayisi": ilan_sayisi,
+    }
+
+def _bfl_guven_listing(predictor, marka, seri, model_yili):
+    """Listeleme anında (tahmin çalıştırmadan) güven değerlendirmesi."""
+    from ml.predictor import _group_key
+    marka, seri = map_fleet_naming(marka, seri)
+    gkey = _group_key(marka, seri)
+    has_group = bool(
+        predictor and predictor.is_loaded()
+        and gkey in getattr(predictor, "group_models", {})
+    )
+    model_group = gkey if has_group else "__general__"
+    ilan = _count_comparable_listings(marka, seri, model_yili)
+    return _degerlendir_guven(model_group, ilan)
 
 def _apply_bfl_filters(q, marka=None, seri=None, durum=None, satis_ayi=None):
     """
@@ -630,13 +685,13 @@ def _apply_bfl_filters(q, marka=None, seri=None, durum=None, satis_ayi=None):
     
 
     if marka:
-        q = q.filter(FiloArac.marka == marka)
+        q = q.filter(FleetVehicle.marka == marka)
 
     if seri:
-        q = q.filter(FiloArac.seri == seri)
+        q = q.filter(FleetVehicle.seri == seri)
 
     if durum:
-        q = q.filter(FiloArac.plaka_durum == durum)
+        q = q.filter(FleetVehicle.plaka_durum == durum)
 
     if satis_ayi:
         try:
@@ -650,12 +705,12 @@ def _apply_bfl_filters(q, marka=None, seri=None, durum=None, satis_ayi=None):
                 sonraki_ay = date(year, month + 1, 1)
 
             en_erken_satis_expr = (
-                cast(FiloArac.alis_tarihi, Date)
+                cast(FleetVehicle.alis_tarihi, Date)
                 + text(f"INTERVAL '{BFL_MIN_HOLD_DAYS} days'")
             )
 
             q = q.filter(
-                FiloArac.alis_tarihi.isnot(None),
+                FleetVehicle.alis_tarihi.isnot(None),
                 en_erken_satis_expr >= ay_baslangic,
                 en_erken_satis_expr < sonraki_ay,
             )
@@ -738,16 +793,16 @@ def _calc_valor_pricing(tahmini_satis: float, annual_rate_pct: float, alis_tarih
 def bfl_options():
     """BFL filtre seçenekleri — marka listesi (sadece uygun plaka durumları)."""
     markas = [
-        r[0] for r in db.session.query(FiloArac.marka)
+        r[0] for r in db.session.query(FleetVehicle.marka)
         .filter(
-            FiloArac.plaka_durum.in_(BFL_ALLOWED_DURUMLAR),
-            FiloArac.marka.isnot(None),
+            FleetVehicle.plaka_durum.in_(BFL_ALLOWED_DURUMLAR),
+            FleetVehicle.marka.isnot(None),
         )
-        .distinct().order_by(FiloArac.marka).all()
+        .distinct().order_by(FleetVehicle.marka).all()
     ]
     durumlar = [
-        r[0] for r in db.session.query(FiloArac.plaka_durum)
-        .filter(FiloArac.plaka_durum.in_(BFL_ALLOWED_DURUMLAR))
+        r[0] for r in db.session.query(FleetVehicle.plaka_durum)
+        .filter(FleetVehicle.plaka_durum.in_(BFL_ALLOWED_DURUMLAR))
         .distinct().all()
     ]
     return jsonify({"markas": markas, "durumlar": durumlar})
@@ -759,20 +814,20 @@ def bfl_series():
     marka = request.args.get("marka", "").strip()
 
     q = (
-        db.session.query(FiloArac.seri)
+        db.session.query(FleetVehicle.seri)
         .filter(
-            FiloArac.plaka_durum.in_(BFL_ALLOWED_DURUMLAR),
-            FiloArac.seri.isnot(None),
+            FleetVehicle.plaka_durum.in_(BFL_ALLOWED_DURUMLAR),
+            FleetVehicle.seri.isnot(None),
         )
     )
 
     if marka:
-        q = q.filter(FiloArac.marka == marka)
+        q = q.filter(FleetVehicle.marka == marka)
 
     series = [
         row[0]
         for row in q.distinct()
-        .order_by(FiloArac.seri)
+        .order_by(FleetVehicle.seri)
         .all()
     ]
 
@@ -787,8 +842,8 @@ def bfl_vehicles():
     durum = request.args.get("durum", "").strip()
     satis_ayi = request.args.get("satis_ayi", "").strip()
 
-    q = FiloArac.query.filter(
-        FiloArac.plaka_durum.in_(BFL_ALLOWED_DURUMLAR)
+    q = FleetVehicle.query.filter(
+        FleetVehicle.plaka_durum.in_(BFL_ALLOWED_DURUMLAR)
     )
 
     q = _apply_bfl_filters(
@@ -800,14 +855,26 @@ def bfl_vehicles():
     )
 
     vehicles = q.order_by(
-        FiloArac.marka,
-        FiloArac.seri,
-        FiloArac.plaka,
+        FleetVehicle.marka,
+        FleetVehicle.seri,
+        FleetVehicle.plaka,
     ).all()
 
-    return jsonify({
-        "vehicles": [vehicle.to_dict() for vehicle in vehicles]
-    })
+    predictor = get_predictor()
+    _guven_cache = {}
+    out = []
+    for vehicle in vehicles:
+        vd = vehicle.to_dict()
+        _key = (vd.get("marka"), vd.get("seri"), vd.get("model_yili"))
+        if _key not in _guven_cache:
+            _guven_cache[_key] = _bfl_guven_listing(predictor, *_key)
+        g = _guven_cache[_key]
+        vd["dusuk_guven"] = g["dusuk_guven"]
+        vd["guven_sebebi"] = g["guven_sebebi"]
+        vd["benzer_ilan_sayisi"] = g["benzer_ilan_sayisi"]
+        out.append(vd)
+
+    return jsonify({"vehicles": out})
 
 
 def _normalize_for_prediction(filo_arac: dict) -> dict:
@@ -820,10 +887,13 @@ def _normalize_for_prediction(filo_arac: dict) -> dict:
         if not s:
             return s
         return str(s).strip().title()
+    
+    _marka, _seri = map_fleet_naming(filo_arac.get("marka"), filo_arac.get("seri"))
+
 
     return {
-        "marka":      title_case(filo_arac.get("marka")),
-        "seri":       title_case(filo_arac.get("seri")),
+        "marka":      title_case(_marka),
+        "seri":       title_case(_seri),
         "model":      filo_arac.get("model"),
         "model_year": filo_arac.get("model_yili"),
         "km":         filo_arac.get("son_km") or 0,
@@ -836,7 +906,7 @@ def _normalize_for_prediction(filo_arac: dict) -> dict:
 @api_bp.route("/bfl/predict/<int:filo_id>", methods=["POST"])
 def bfl_predict(filo_id):
     """Tek bir filo aracı için tahmin + kâr + valör fiyatlandırma."""
-    filo = FiloArac.query.get(filo_id)
+    filo = FleetVehicle.query.get(filo_id)
     if not filo:
         return jsonify({"error": "Araç bulunamadı"}), 404
 
@@ -858,7 +928,7 @@ def bfl_predict(filo_id):
         return jsonify({"error": f"Tahmin hatası: {str(e)}"}), 500
 
     b2c_fiyat = result["predicted_price"]
-    b2b_fiyat = b2c_fiyat * 0.90
+    b2b_fiyat = b2c_fiyat * B2B_FACTOR
     alis_fiyati = filo_dict.get("alis_fiyati") or 0
 
     b2c_kar = b2c_fiyat - alis_fiyati if alis_fiyati else None
@@ -877,6 +947,12 @@ def bfl_predict(filo_id):
 
     # Valör fiyatlandırma (faiz oranı verildiyse)
     valor = _calc_valor_pricing(b2c_fiyat, annual_rate, filo_dict.get("alis_tarihi")) if annual_rate > 0 else None
+    
+    _mk, _sr = map_fleet_naming(filo_dict.get("marka"), filo_dict.get("seri"))
+    _guven = _degerlendir_guven(
+        result.get("model_group"),
+        _count_comparable_listings(_mk, _sr, filo_dict.get("model_yili")),
+    )
 
     return jsonify({
         "success": True,
@@ -902,7 +978,12 @@ def bfl_predict(filo_id):
         "model_group": result.get("model_group", "genel"),
         "valor": valor,
         "annual_rate_pct": annual_rate,
+
+        "dusuk_guven": _guven["dusuk_guven"],
+        "guven_sebebi": _guven["guven_sebebi"],
+        "benzer_ilan_sayisi": _guven["benzer_ilan_sayisi"],
     })
+    
 
 
 @api_bp.route("/bfl/predict-batch", methods=["POST"])
@@ -922,8 +1003,8 @@ def bfl_predict_batch():
     if not predictor.is_loaded():
         return jsonify({"error": "Model henüz eğitilmemiş"}), 503
 
-    q = FiloArac.query.filter(
-        FiloArac.plaka_durum.in_(BFL_ALLOWED_DURUMLAR)
+    q = FleetVehicle.query.filter(
+        FleetVehicle.plaka_durum.in_(BFL_ALLOWED_DURUMLAR)
     )
 
     q = _apply_bfl_filters(
@@ -940,6 +1021,7 @@ def bfl_predict_batch():
     toplam_tahmin = 0
     karli = 0
     zararli = 0
+    _ilan_cache = {}
 
     for v in vehicles:
         fd = v.to_dict()
@@ -951,7 +1033,7 @@ def bfl_predict_batch():
             continue
 
         b2c_fiyat = r["predicted_price"]
-        b2b_fiyat = b2c_fiyat * 0.90
+        b2b_fiyat = b2c_fiyat * B2B_FACTOR
         alis = fd.get("alis_fiyati") or 0
 
         b2c_kar = b2c_fiyat - alis if alis else None
@@ -968,13 +1050,21 @@ def bfl_predict_batch():
             else None
         )
 
-        if alis:
+        _mk, _sr = map_fleet_naming(fd.get("marka"), fd.get("seri"))
+        _key = (_mk, _sr, fd.get("model_yili"))
+        if _key not in _ilan_cache:
+            _ilan_cache[_key] = _count_comparable_listings(*_key)
+        _guven = _degerlendir_guven(r.get("model_group"), _ilan_cache[_key])
+
+        # Parasal toplamlara SADECE güvenilir araçlar katılır (düşük güvenliler hariç)
+        if alis and not _guven["dusuk_guven"]:
             toplam_alis   += alis
             toplam_tahmin += b2c_fiyat
             if b2c_kar and b2c_kar > 0: karli += 1
             elif b2c_kar and b2c_kar < 0: zararli += 1
 
         valor = _calc_valor_pricing(b2c_fiyat, annual_rate, fd.get("alis_tarihi")) if annual_rate > 0 else None
+
 
         results.append({
             "id":            fd["id"],
@@ -1006,7 +1096,12 @@ def bfl_predict_batch():
             "b2b_kar_pct": round(b2b_kar_pct, 1) if b2b_kar_pct is not None else None,
 
             "valor": valor,
+
+            "dusuk_guven": _guven["dusuk_guven"],
+            "guven_sebebi": _guven["guven_sebebi"],
+            "benzer_ilan_sayisi": _guven["benzer_ilan_sayisi"],
         })
+        
 
     toplam_kar = toplam_tahmin - toplam_alis
     ort_kar_pct = (toplam_kar / toplam_alis * 100) if toplam_alis else 0
@@ -1014,8 +1109,8 @@ def bfl_predict_batch():
     # Valör özeti — valörlü satılabilir araçların toplamı
     valor_ozet = None
     if annual_rate > 0 and results:
-        valorlu_list = [r for r in results if r.get("valor") and r["valor"].get("valorlu")]
-        satilabilir_count = sum(1 for r in results if r.get("valor") and r["valor"].get("satilabilir"))
+        valorlu_list = [r for r in results if not r.get("dusuk_guven") and r.get("valor") and r["valor"].get("valorlu")]
+        satilabilir_count = sum(1 for r in results if not r.get("dusuk_guven") and r.get("valor") and r["valor"].get("satilabilir"))
         toplam_hedef   = sum(r["valor"]["hedef_satis_fiyati"] for r in valorlu_list)
         toplam_bugun   = sum(r["valor"]["valorlu_bugun_fiyati"] for r in valorlu_list)
         toplam_indirim = sum(r["valor"]["max_indirim_tl"] for r in valorlu_list)
@@ -1034,6 +1129,8 @@ def bfl_predict_batch():
         "valor_ozet": valor_ozet,
         "ozet": {
             "arac_sayisi":    len(results),
+            "dusuk_guven_arac": sum(1 for r in results if r.get("dusuk_guven")),
+            "guvenilir_arac":   sum(1 for r in results if not r.get("dusuk_guven")),
             "toplam_alis":    round(toplam_alis, -3),
             "toplam_tahmin":  round(toplam_tahmin, -3),
             "toplam_kar":     round(toplam_kar, -3),

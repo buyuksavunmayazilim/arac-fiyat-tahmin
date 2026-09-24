@@ -7,8 +7,8 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 
 
-FILO_FILE = os.getenv("FILO_FILE", "/data/Filo Takip Listesi-13-05-2026 1.xlsx")
-HASAR_FILE = os.getenv("HASAR_FILE", "/data/Hasar Listesi 13-05-2026.xlsx")
+FILO_FILE = os.getenv("FILO_FILE", "/data/filo_takip_20260727_104533.xls")
+HASAR_FILE = os.getenv("HASAR_FILE", "/data/Hasar Listesi.xls")
 SOURCE_DATE = os.getenv("SOURCE_DATE", "2026-05-13")
 
 DATABASE_URL = os.getenv("DATABASE_URL")

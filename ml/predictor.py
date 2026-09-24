@@ -19,10 +19,11 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
+from settings import MIN_SAMPLES_FOR_GROUP_MODEL
+
 logger = logging.getLogger(__name__)
 
-# ── Sabitler ──────────────────────────────────────────────────────────────────
-MIN_SAMPLES_FOR_GROUP_MODEL = 50   # Bu kadar veri yoksa genel model kullan
+# ── Sabitler ───────────────────────────────────────────────────────────────
 
 CATEGORICAL_COLS = ["fueloil", "gear", "car_status", "car_type",
                     "drive", "color", "plate", "whois"]

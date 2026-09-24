@@ -2,3 +2,5 @@ test*
 check*
 *.sql
 *.xlsx
+filo_importer
+filo_importer/*
