@@ -17,8 +17,13 @@ from functools import wraps
 from flask import Blueprint, request, jsonify
 
 from ml.predictor import get_predictor
+from ml.predictor import _group_key
+from app import db
+from app.models import Vehicle
+from app.api.routes import _count_comparable_listings, _degerlendir_guven
 
 from settings import B2B_FACTOR, BFL_MIN_HOLD_DAYS, map_fleet_naming   # merkezi config (settings.py)
+from ml.predictor import DAMAGE_PARTS
 
 predict_api_bp = Blueprint("predict_api", __name__)
 
@@ -62,6 +67,18 @@ FIELD_ALIASES = {
 
 _TITLE_CASE_FIELDS = {"marka", "seri", "fueloil", "gear"}
 
+# Parça durumu değer eşlemesi — tüketici Türkçe/sade gönderebilir, motor kodlarına çevrilir
+DAMAGE_VALUE_ALIASES = {
+    "orijinal": "original-new", "original": "original-new", "original-new": "original-new",
+    "yok": "original-new", "-": "original-new", "": "original-new",
+    "lokal boyalı": "localpainted-new", "lokal boyali": "localpainted-new",
+    "lokal_boyali": "localpainted-new", "localpainted": "localpainted-new",
+    "localpainted-new": "localpainted-new",
+    "boyalı": "painted-new", "boyali": "painted-new", "painted": "painted-new",
+    "painted-new": "painted-new",
+    "değişen": "changed-new", "degisen": "changed-new", "changed": "changed-new",
+    "changed-new": "changed-new",
+}
 
 def _title(s):
     return str(s).strip().title() if s not in (None, "") else s
@@ -106,8 +123,18 @@ def normalize_payload(raw: dict) -> dict:
         if out.get(f):
             out[f] = _title(out[f])
 
-    # BFL mantığıyla tutarlı: dış tahminde hasar dikkate alınmaz
-    out.setdefault("damage_registered", False)
+    # Hasar kaydı bayrağı (bool'a çevir)
+    dr = out.get("damage_registered", False)
+    out["damage_registered"] = (
+        dr if isinstance(dr, bool)
+        else str(dr).strip().lower() in ("true", "1", "evet", "var", "yes")
+    )
+
+    # Parça durumları: tüketicinin gönderdiği değerleri motor kodlarına çevir
+    for part in DAMAGE_PARTS:
+        if part in out and out[part] is not None:
+            out[part] = DAMAGE_VALUE_ALIASES.get(str(out[part]).strip().lower(), "original-new")
+
     return out
 
 
@@ -188,9 +215,27 @@ def v1_predict():
 
     data = normalize_payload(raw)
 
-    # Zorunlu minimum alanlar
-    if not data.get("marka"):
-        return jsonify({"error": "En az marka (brand) gerekli"}), 400
+    # Zorunlu alanlar
+    REQUIRED = {
+        "marka":      "brand (marka)",
+        "seri":       "vehicle_type (seri)",
+        "model":      "version (model)",
+        "model_year": "model_year (model_yili)",
+        "km":         "last_odometer_km (son_km)",
+        "fueloil":    "fuel_type (yakit_tipi)",
+        "gear":       "transmission (vites_tipi)",
+    }
+    eksik = []
+    for key, label in REQUIRED.items():
+        val = data.get(key)
+        # model_year ve km sayısaldır (0 geçerli); diğerleri boş olmamalı
+        if key in ("model_year", "km"):
+            if val is None:
+                eksik.append(label)
+        elif not val:
+            eksik.append(label)
+    if eksik:
+        return jsonify({"error": "Zorunlu alan(lar) eksik: " + ", ".join(eksik)}), 400
 
     try:
         result = predictor.predict(data)
@@ -231,6 +276,26 @@ def v1_predict():
         resp["valor"] = _calc_valor(b2c, annual_rate, data.get("purchase_invoice_date"))
         resp["annual_rate_pct"] = annual_rate
 
+    # Hasar etkisi — herhangi bir hasar bilgisi verildiyse
+    _has_damage = bool(data.get("damage_registered")) or any(
+        data.get(p) not in (None, "", "original-new") for p in DAMAGE_PARTS
+    )
+    if _has_damage:
+        try:
+            resp["damage_effect"] = predictor.damage_counterfactual(data)
+        except Exception:
+            resp["damage_effect"] = None
+
+
+    # Güven bayrağı — genel modele düştüyse veya yeterli piyasa verisi yoksa düşük güven
+    _guven = _degerlendir_guven(
+        result.get("model_group"),
+        _count_comparable_listings(data.get("marka"), data.get("seri"), data.get("model_year")),
+    )
+    resp["dusuk_guven"] = _guven["dusuk_guven"]
+    resp["guven_sebebi"] = _guven["guven_sebebi"]
+    resp["benzer_ilan_sayisi"] = _guven["benzer_ilan_sayisi"]
+
     return jsonify(resp)
 
 
@@ -239,3 +304,97 @@ def v1_health():
     """Basit sağlık kontrolü (auth gerektirmez)."""
     predictor = get_predictor()
     return jsonify({"status": "ok", "model_loaded": predictor.is_loaded()}), 200
+
+# ── Seçenek (dropdown) uçları — SADECE güvenilir (grup modeli olan) araçlar ────
+
+def _supported_pairs():
+    """araclar'daki (marka, seri) çiftlerinden grup modeli OLANLAR = güvenilir."""
+    predictor = get_predictor()
+    groups = getattr(predictor, "group_models", {}) if predictor and predictor.is_loaded() else {}
+    if not groups:
+        return []
+    rows = (db.session.query(Vehicle.marka, Vehicle.seri)
+            .filter(Vehicle.marka.isnot(None), Vehicle.seri.isnot(None),
+                    Vehicle.price.isnot(None), Vehicle.price != "")
+            .distinct().all())
+    out, seen = [], set()
+    for marka, seri in rows:
+        gk = _group_key(marka, seri)
+        if gk in groups and gk not in seen:
+            seen.add(gk)
+            out.append((marka, seri))
+    return out
+
+
+@predict_api_bp.route("/options", methods=["GET"])
+@require_api_key
+def v1_options():
+    """Desteklenen markalar (form ilk dropdown). Yakıt/vites/yıl bağlamsaldır -> /options/attributes."""
+    markas = sorted({m for m, _ in _supported_pairs()})
+    return jsonify({"markas": markas})
+
+
+@predict_api_bp.route("/options/series", methods=["GET"])
+@require_api_key
+def v1_options_series():
+    """Bir marka için DESTEKLENEN seriler (grup modeli olanlar)."""
+    raw = request.args.get("marka") or ""
+    marka_key, _ = map_fleet_naming(raw, None)
+    marka_key = (marka_key or "").strip().lower()
+    series = sorted({s for m, s in _supported_pairs()
+                     if (m or "").strip().lower() == marka_key})
+    return jsonify({"marka": raw, "series": series})
+
+
+@predict_api_bp.route("/options/models", methods=["GET"])
+@require_api_key
+def v1_options_models():
+    """Bir marka+seri için model/versiyon listesi (araclar'dan)."""
+    raw_m = request.args.get("marka") or ""
+    raw_s = request.args.get("seri") or ""
+    if not raw_m or not raw_s:
+        return jsonify({"error": "marka ve seri gerekli"}), 400
+    m, sr = map_fleet_naming(raw_m, raw_s)
+    rows = (db.session.query(Vehicle.model)
+            .filter(Vehicle.marka.ilike(m), Vehicle.seri.ilike(sr),
+                    Vehicle.model.isnot(None))
+            .distinct().order_by(Vehicle.model).all())
+    return jsonify({"marka": raw_m, "seri": raw_s,
+                    "models": [r[0] for r in rows if r[0]]})
+
+@predict_api_bp.route("/options/attributes", methods=["GET"])
+@require_api_key
+def v1_options_attributes():
+    """Seçilen araca göre GEÇERLİ yakıt/vites/yıl/kasa değerleri.
+    marka+seri zorunlu; model verilirse daha da daraltır (ör. elektrikli modelde
+    yalnızca 'Elektrikli' döner, LPG dönmez)."""
+    raw_m = request.args.get("marka") or ""
+    raw_s = request.args.get("seri") or ""
+    model = (request.args.get("model") or "").strip()
+    if not raw_m or not raw_s:
+        return jsonify({"error": "marka ve seri gerekli"}), 400
+
+    m, sr = map_fleet_naming(raw_m, raw_s)
+    base = Vehicle.query.filter(
+        Vehicle.marka.ilike(m), Vehicle.seri.ilike(sr),
+        Vehicle.price.isnot(None), Vehicle.price != "",
+    )
+    if model:
+        base = base.filter(Vehicle.model.ilike(model))
+
+    def distinct_col(col):
+        rows = base.with_entities(col).filter(col.isnot(None)).distinct().all()
+        return sorted({r[0] for r in rows if r[0]})
+
+    years = sorted({int(r[0]) for r in
+                    base.with_entities(Vehicle.model_year)
+                        .filter(Vehicle.model_year.isnot(None)).distinct().all()
+                    if str(r[0]).isdigit()}, reverse=True)
+
+    return jsonify({
+        "marka": raw_m, "seri": raw_s, "model": model or None,
+        "fuel_types": distinct_col(Vehicle.fueloil),
+        "transmissions": distinct_col(Vehicle.gear),
+        "body_types": distinct_col(Vehicle.car_type),
+        "years": years,
+    })
