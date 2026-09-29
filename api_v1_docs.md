@@ -196,7 +196,11 @@ const res = await fetch("https://SUNUCU/api/v1/predict", {
 });
 const data = await res.json();
 if (!res.ok) throw new Error(data.error);
-console.log(data.predicted_price, data.dusuk_guven);
+if (data.insufficient_data) {
+  console.log("Bu araç için yeterli veri yok — tahmin üretilemedi");
+} else {
+  console.log(data.predicted_price, data.dusuk_guven, data.prediction_source);
+}
 ```
 
 ### İstek örneği — Python (requests)
@@ -218,7 +222,11 @@ r = requests.post(
     },
 )
 r.raise_for_status()
-print(r.json()["predicted_price"])
+data = r.json()
+if data["insufficient_data"]:
+    print("Bu araç için yeterli veri yok — tahmin üretilemedi")
+else:
+    print(data["predicted_price"], data["prediction_source"])
 ```
 
 ---
@@ -230,15 +238,24 @@ print(r.json()["predicted_price"])
 | Alan | Tip | Açıklama |
 |---|---|---|
 | `success` | bool | `true` |
-| `predicted_price` | number | Tahmini piyasa (B2C) değeri, TL — en yakın 1.000'e yuvarlı |
-| `price_lower` | number | Tahmin aralığı alt sınır |
-| `price_upper` | number | Tahmin aralığı üst sınır |
+| `predicted_price` | number \| **null** | Tahmini piyasa (B2C) değeri, TL — en yakın 1.000'e yuvarlı. **Yeterli veri yoksa `null` döner** (bkz. `insufficient_data`, §5) |
+| `insufficient_data` | bool | `true` ise sistem bu araç için güvenilir bir fiyat **üretemedi** → `predicted_price` `null`'dır (bkz. §5) |
+| `prediction_source` | string | Tahminin hangi katmandan geldiği: `group_model`, `trim_median`, `segment_median` veya `none` (bkz. §5) |
+| `price_lower` | number \| null | Tahmin aralığı alt sınır (fiyat üretilemezse `null`) |
+| `price_upper` | number \| null | Tahmin aralığı üst sınır (fiyat üretilemezse `null`) |
 | `confidence_pct` | number | Model güven yüzdesi (0–100) |
-| `model_group` | string | Kullanılan model. Bkz. §5 (güvenilirlik) |
+| `model_group` | string | Kullanılan model grubu (örn. `mercedes-benz__glc__ust`). Bkz. §5 |
 | `dusuk_guven` | bool | `true` ise tahmine temkinli yaklaşın (bkz. §5) |
-| `guven_sebebi` | string \| null | Düşük güvenin sebebi (yoksa `null`) |
+| `guven_sebebi` | string \| null | Düşük güvenin / veri yetersizliğinin sebebi (yoksa `null`) |
 | `benzer_ilan_sayisi` | number | Bu araç için eğitim verisindeki benzer ilan sayısı |
 | `input` | object | Sistemin yorumladığı normalize girdi (kontrol için) |
+
+> **Önemli:** `insufficient_data: true` bir **hata değildir** — HTTP `200` ile döner ve
+> `success: true`'dur, sadece `predicted_price` `null`'dır. Yani "araç tanındı ama
+> elimizde güvenilir fiyat üretecek kadar benzer ilan yok" demektir. İstemci tarafında
+> önce `insufficient_data`'yı kontrol edip, `true` ise kullanıcıya fiyat yerine
+> "bu araç için yeterli veri yok" mesajı gösterin. `purchase_price`/`annual_rate_pct`
+> gönderilmiş olsa bile fiyat `null` olduğunda kâr/valör blokları **hesaplanmaz**.
 
 ### `purchase_price` gönderilirse ek olarak
 
@@ -285,10 +302,12 @@ print(r.json()["predicted_price"])
 {
   "success": true,
   "predicted_price": 5641000,
+  "insufficient_data": false,
+  "prediction_source": "group_model",
   "price_lower": 5379000,
   "price_upper": 6239000,
   "confidence_pct": 84.8,
-  "model_group": "mercedes-benz__glc",
+  "model_group": "mercedes-benz__glc__ust",
   "dusuk_guven": false,
   "guven_sebebi": null,
   "benzer_ilan_sayisi": 328,
@@ -320,21 +339,66 @@ print(r.json()["predicted_price"])
 }
 ```
 
+### Örnek yanıt — fiyat üretilemedi (yeterli veri yok)
+
+Araç tanınır ama elde güvenilir fiyat üretecek kadar benzer ilan yoksa (örn. çok yeni
+veya kapsam dışı bir model), HTTP `200` ile şu döner:
+
+```json
+{
+  "success": true,
+  "predicted_price": null,
+  "insufficient_data": true,
+  "prediction_source": "none",
+  "price_lower": null,
+  "price_upper": null,
+  "confidence_pct": null,
+  "model_group": "citroen__c3",
+  "dusuk_guven": true,
+  "guven_sebebi": "Yeterli veri yok — tahmin üretilemedi",
+  "benzer_ilan_sayisi": 0,
+  "input": {
+    "marka": "Citroen", "seri": "C3", "model": "E Max",
+    "model_year": 2025, "km": 1000, "fueloil": "Elektrikli", "gear": "Otomatik"
+  }
+}
+```
+
+> `purchase_price` / `annual_rate_pct` gönderilmiş olsa bile, fiyat `null` olduğunda
+> `b2c_kar`, `b2b_fiyat`, `valor` gibi bloklar **eklenmez** (hesaplanacak fiyat yok).
+
 ---
 
 ## 5. Güvenilirlik — "hangi araçlar" iyi tahmin alır?
 
-Servis **her araç için bir tahmin döndürür**, ama hepsi eşit güvenilir değildir.
-Güvenilirliği doğrudan yanıttaki **`dusuk_guven`** alanından anlarsınız:
+Servis, elindeki veri güvenilir bir fiyat üretmeye **yetiyorsa** tahmin döndürür;
+yetmiyorsa uydurma bir sayı üretmek yerine `predicted_price: null` +
+`insufficient_data: true` döner. Yani iki durumu ayırt edersiniz:
 
-- `dusuk_guven: false` → tahmin güvenilir.
-- `dusuk_guven: true` → o araç için ya özel model yok (genel modele düşmüş) ya da
-  eğitim verisinde yeterli benzer ilan yok. `guven_sebebi` bunu açıklar,
-  `benzer_ilan_sayisi` kaç benzer ilan bulunduğunu verir. Bu durumda fiyat gerçekçi
-  olmayabilir — kullanıcıya "tahmini değer, düşük güven" olarak gösterin.
+- **Fiyat üretildi** (`insufficient_data: false`, `predicted_price` bir sayı) —
+  `dusuk_guven` ile ince ayarı yaparsınız:
+  - `dusuk_guven: false` → tahmin güvenilir.
+  - `dusuk_guven: true` → fiyat üretildi ama temkinli yaklaşın (az sayıda benzer ilan,
+    dolaylı katmandan gelen medyan vb.). `guven_sebebi` sebebi, `benzer_ilan_sayisi`
+    kaç benzer ilan bulunduğunu verir. Kullanıcıya "tahmini değer, düşük güven" olarak gösterin.
+- **Fiyat üretilemedi** (`insufficient_data: true`, `predicted_price: null`) — araç
+  tanındı ama elde güvenilir fiyat üretecek kadar veri yok. `prediction_source: "none"`
+  gelir. Kullanıcıya fiyat yerine "yeterli veri yok" mesajı gösterin.
 
-`model_group` alanı da aynı bilgiyi teknik düzeyde verir: değer `__general__` ise
-düşük güvenlidir, bir marka+seri anahtarıysa (örn. `renault__clio`) özel model kullanılmıştır.
+### `prediction_source` — tahmin hangi katmandan geldi?
+
+Sistem, aracın donanımına/verisine göre 3 katmanlı bir çözümleyici kullanır ve
+tahminin hangi katmandan çıktığını `prediction_source` ile bildirir:
+
+| Değer | Anlamı | Güven |
+|---|---|---|
+| `group_model` | O marka+seri (+donanım segmenti) için eğitilmiş özel XGBoost modeli kullanıldı | En yüksek |
+| `trim_median` | Model bazlı yeterli veri yok; aynı donanım/yıl grubunun (km bandına göre daraltılmış) gerçek ilan **medyanı** kullanıldı | Orta |
+| `segment_median` | Donanım segmentinin (baz/üst) medyanı kullanıldı | Orta-düşük |
+| `none` | Hiçbir katman güvenilir sonuç veremedi → `insufficient_data: true`, `predicted_price: null` | — |
+
+> `model_group` alanı kullanılan grup anahtarını teknik düzeyde verir
+> (örn. `mercedes-benz__glc__ust`); asıl güven sinyali `prediction_source` + `dusuk_guven`'dir.
 
 > **Not:** `/api/v1/options*` uçlarından seçilen araçlar zaten güvenilirdir
 > (`dusuk_guven` her zaman `false` gelir). `dusuk_guven` asıl olarak kullanıcı
@@ -454,3 +518,9 @@ Kimlik gerektirmez. İzleme (monitoring) için kullanılabilir.
 - Servis durumsuzdur; her istek bağımsızdır, oturum/çerez yoktur.
 - `input` alanını her zaman kontrol edin — sistemin marka/seri/yılı nasıl
   yorumladığını gösterir; beklenmedik bir tahminde ilk buraya bakın.
+- **"Fiyat gelmedi" bir hata değildir:** `insufficient_data: true` + `predicted_price: null`
+  HTTP `200`/`success: true` ile döner. İstemcide bunu `4xx`/`5xx` gibi ele almayın;
+  önce `insufficient_data`'yı kontrol edip fiyat yerine "yeterli veri yok" gösterin.
+- Fiyat, dahili tahminle aynı 3 katmanlı çözümleyiciden gelir
+  (`group_model` → `trim_median` → `segment_median`), böylece dışa açık API ile
+  panel içi tahmin **birebir aynı** sonucu üretir.

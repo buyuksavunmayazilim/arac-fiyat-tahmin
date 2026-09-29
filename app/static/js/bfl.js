@@ -327,18 +327,11 @@ async function listVehicles() {
             ₺${fmt(vehicle.alis_fiyati)}
           </div>
 
-          ${
-            vehicle.dusuk_guven
-              ? `<div
-                  title="${(vehicle.guven_sebebi || 'Yetersiz veri').replace(/"/g, '&quot;')}"
-                  style="margin-top:6px;font-size:11px;color:var(--gray-500);border:1px dashed var(--gray-300);border-radius:6px;padding:4px 8px;white-space:nowrap;cursor:not-allowed;"
-                >Veri yetersiz</div>`
-              : `<button
+                <button
                   class="btn btn-sm btn-outline"
                   style="margin-top:6px;"
                   onclick="event.stopPropagation(); predictSingle(${vehicle.id}, this)"
-                >Tahmin Et</button>`
-          }
+                >Tahmin Et</button>
         </div>
       `;
 
@@ -438,6 +431,12 @@ async function predictSingle(filoId, button) {
       b2b_kar_pct: data.b2b_kar_pct,
 
       valor: data.valor,
+
+      insufficient_data: data.insufficient_data,
+      dusuk_guven: data.dusuk_guven,
+      guven_sebebi: data.guven_sebebi,
+      prediction_source: data.prediction_source,
+      benzer_ilan_sayisi: data.benzer_ilan_sayisi,
     };
 
     renderResults([result], null, null, faiz);
@@ -532,8 +531,8 @@ function renderSummary(ozet) {
   summary.style.display = 'block';
 
   const countEl = document.getElementById('sum-count');
-  countEl.innerHTML = (ozet.dusuk_guven_arac > 0)
-    ? `${ozet.arac_sayisi} <span style="font-size:12px;color:var(--gray-500);font-weight:500;">(${ozet.dusuk_guven_arac} veri yetersiz)</span>`
+  countEl.innerHTML = (ozet.veri_yetersiz_arac > 0)
+    ? `${ozet.arac_sayisi} <span style="font-size:12px;color:var(--gray-500);font-weight:500;">(${ozet.veri_yetersiz_arac} veri yetersiz)</span>`
     : `${ozet.arac_sayisi}`;
 
   document.getElementById('sum-alis').textContent =
@@ -585,10 +584,10 @@ function renderResultsTable(results) {
 
 
 function appendMainResultRow(tbody, result) {
-  // Düşük güven → tahmin/kâr yerine "veri yetersiz"
-  if (result.dusuk_guven) {
+  // Veri yetersiz → fiyat yok, "veri yetersiz" satırı
+  if (result.insufficient_data) {
     const row = document.createElement('tr');
-    row.style.cssText = `border-bottom:1px solid var(--gray-100);background:#fffaf5;`;
+    row.style.cssText = `border-bottom:1px solid var(--gray-100);background:#fff7f5;`;
     row.innerHTML = `
       <td style="padding:10px 8px;font-family:var(--font-number);font-weight:600;white-space:nowrap;">${result.plaka || '—'}</td>
       <td style="padding:10px 8px;min-width:180px;">
@@ -606,152 +605,48 @@ function appendMainResultRow(tbody, result) {
     return;
   }
 
-  const b2cFiyat =
-    result.b2c_fiyat ??
-    result.tahmini_satis ??
-    0;
-
-  const b2bFiyat =
-    result.b2b_fiyat ??
-    (Number(b2cFiyat) * 0.90);
-
-  const b2cKar =
-    result.b2c_kar ??
-    result.kar;
-
-  const b2cKarPct =
-    result.b2c_kar_pct ??
-    result.kar_pct;
-
+  const b2cFiyat = result.b2c_fiyat ?? result.tahmini_satis ?? 0;
+  const b2bFiyat = result.b2b_fiyat ?? (Number(b2cFiyat) * 0.90);
+  const b2cKar = result.b2c_kar ?? result.kar;
+  const b2cKarPct = result.b2c_kar_pct ?? result.kar_pct;
   const b2bKar = result.b2b_kar;
   const b2bKarPct = result.b2b_kar_pct;
-
   const b2cColor = getKarColor(b2cKar);
   const b2bColor = getKarColor(b2bKar);
 
+  // Düşük güven (fiyat VAR ama medyandan/temkinli) → küçük rozet
+  const kaynakEtiket =
+    (result.prediction_source === 'trim_median' || result.prediction_source === 'segment_median')
+      ? 'segment ort.'
+      : 'düşük güven';
+  const guvenRozet = result.dusuk_guven
+    ? `<span title="${(result.guven_sebebi || '').replace(/"/g, '&quot;')}" style="margin-left:6px;color:var(--accent);border:1px dashed var(--accent);border-radius:6px;padding:1px 6px;font-size:10px;white-space:nowrap;">${kaynakEtiket}</span>`
+    : '';
+
   const row = document.createElement('tr');
-
-  row.style.cssText = `
-    border-bottom:1px solid var(--gray-100);
-  `;
-
+  row.style.cssText = `border-bottom:1px solid var(--gray-100);`;
   row.innerHTML = `
-    <td style="
-      padding:10px 8px;
-      font-family:var(--font-number);
-      font-weight:600;
-      white-space:nowrap;
-    ">
-      ${result.plaka || '—'}
-    </td>
-
+    <td style="padding:10px 8px;font-family:var(--font-number);font-weight:600;white-space:nowrap;">${result.plaka || '—'}</td>
     <td style="padding:10px 8px;min-width:180px;">
       ${result.marka || ''} ${result.seri || ''}
-
-      <div style="
-        font-size:11px;
-        color:var(--gray-500);
-        margin-top:2px;
-      ">
-        ${result.model || ''}
-      </div>
+      <div style="font-size:11px;color:var(--gray-500);margin-top:2px;">${result.model || ''}${guvenRozet}</div>
     </td>
-
-    <td style="padding:10px 8px;white-space:nowrap;">
-      ${result.model_yili || '—'}
-    </td>
-
-    <td style="
-      padding:10px 8px;
-      text-align:right;
-      white-space:nowrap;
-      font-family:var(--font-number);
-    ">
-      ${
-        result.son_km != null
-          ? fmt(result.son_km)
-          : '—'
-      }
-    </td>
-
-    <td style="
-      padding:10px 8px;
-      text-align:right;
-      white-space:nowrap;
-      font-family:var(--font-number);
-    ">
-      ₺${fmt(result.alis_fiyati)}
-    </td>
-
-    <td style="
-      padding:10px 8px;
-      text-align:right;
-      white-space:nowrap;
-      font-family:var(--font-number);
-      font-weight:700;
-      color:var(--navy-700);
-    ">
-      ₺${fmt(b2cFiyat)}
-    </td>
-
-    <td style="
-      padding:10px 8px;
-      text-align:right;
-      white-space:nowrap;
-      font-family:var(--font-number);
-      font-weight:700;
-      color:var(--accent);
-    ">
-      ₺${fmt(b2bFiyat)}
-    </td>
-
-    <td style="
-      padding:10px 8px;
-      text-align:right;
-      white-space:nowrap;
-      font-family:var(--font-number);
-      font-weight:700;
-      color:${b2cColor};
-    ">
-      ${formatKar(b2cKar)}
-    </td>
-
-    <td style="
-      padding:10px 8px;
-      text-align:right;
-      white-space:nowrap;
-      color:${b2cColor};
-    ">
-      ${formatKarPct(b2cKarPct)}
-    </td>
-
-    <td style="
-      padding:10px 8px;
-      text-align:right;
-      white-space:nowrap;
-      font-family:var(--font-number);
-      font-weight:700;
-      color:${b2bColor};
-    ">
-      ${formatKar(b2bKar)}
-    </td>
-
-    <td style="
-      padding:10px 8px;
-      text-align:right;
-      white-space:nowrap;
-      color:${b2bColor};
-    ">
-      ${formatKarPct(b2bKarPct)}
-    </td>
+    <td style="padding:10px 8px;white-space:nowrap;">${result.model_yili || '—'}</td>
+    <td style="padding:10px 8px;text-align:right;white-space:nowrap;font-family:var(--font-number);">${result.son_km != null ? fmt(result.son_km) : '—'}</td>
+    <td style="padding:10px 8px;text-align:right;white-space:nowrap;font-family:var(--font-number);">₺${fmt(result.alis_fiyati)}</td>
+    <td style="padding:10px 8px;text-align:right;white-space:nowrap;font-family:var(--font-number);font-weight:700;color:var(--navy-700);">₺${fmt(b2cFiyat)}</td>
+    <td style="padding:10px 8px;text-align:right;white-space:nowrap;font-family:var(--font-number);font-weight:700;color:var(--accent);">₺${fmt(b2bFiyat)}</td>
+    <td style="padding:10px 8px;text-align:right;white-space:nowrap;font-family:var(--font-number);font-weight:700;color:${b2cColor};">${formatKar(b2cKar)}</td>
+    <td style="padding:10px 8px;text-align:right;white-space:nowrap;color:${b2cColor};">${formatKarPct(b2cKarPct)}</td>
+    <td style="padding:10px 8px;text-align:right;white-space:nowrap;font-family:var(--font-number);font-weight:700;color:${b2bColor};">${formatKar(b2bKar)}</td>
+    <td style="padding:10px 8px;text-align:right;white-space:nowrap;color:${b2bColor};">${formatKarPct(b2bKarPct)}</td>
   `;
-
   tbody.appendChild(row);
 }
 
 
 function appendValorDetailRow(tbody, result) {
-  if (result.dusuk_guven) return;
+  if (result.insufficient_data) return;
   const valor = result.valor;
 
   if (!valor) return;

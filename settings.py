@@ -97,3 +97,42 @@ def map_fleet_naming(marka, seri):
     if (m, s) in FLEET_MODEL_ALIASES:
         m, s = FLEET_MODEL_ALIASES[(m, s)]
     return m, s
+
+
+# ── Segment medyanı (3 katmanlı tahmin çözümleyici) ───────────────────────────
+# Grup ML modeli olmayan (veya trim'i tier içinde karışan) araçlarda, araclar'daki
+# gerçek benzer ilanların medyanı kullanılır. Bu sayıdan az ilan varsa medyan
+# güvenilmez sayılıp "veri yetersiz" denir.
+MEDIAN_MIN_LISTINGS = 2
+# Medyan bu sayıdan az ilana dayanıyorsa "düşük güven" işaretlenir.
+MEDIAN_CONFIDENT_LISTINGS = 10
+
+GROUP_MAX_MEDIAN_DEVIATION_PCT = 15.0
+
+
+# ── Filo → araclar yakıt tipi eşlemesi ────────────────────────────────────────
+# vehicles tablosu yakıtı farklı yazıyor; modelin eğitildiği (araclar) yazımına çevir.
+FLEET_FUEL_ALIASES = {
+    "benzin":            "Benzinli",
+    "benzinli":          "Benzinli",
+    "dizel":             "Dizel",
+    "dizel + adblue":    "Dizel",
+    "benzin hybrid":     "Hibrit",
+    "benzin + elektrik": "Hibrit",
+    "dizel + elektrik":  "Hibrit",
+    "hibrit":            "Hibrit",
+    "elektrik":          "Elektrikli",
+    "elektrikli":        "Elektrikli",
+    "benzin & lpg":      "Benzin & LPG",
+    "lpg":               "Benzin & LPG",
+}
+
+
+def map_fuel(yakit):
+    """Filo yakıt yazımını araclar (eğitim) yazımına çevirir."""
+    if not yakit:
+        return yakit
+    return FLEET_FUEL_ALIASES.get(str(yakit).strip().lower(), yakit)
+
+# Segment medyanında km bandı: bu kadar ilan varsa km'ye yakın banttan medyan alınır.
+MEDIAN_KM_MIN_LISTINGS = 5

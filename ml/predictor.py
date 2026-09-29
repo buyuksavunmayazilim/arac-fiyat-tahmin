@@ -5,12 +5,13 @@ Her marka+seri+model kombinasyonu için ayrı XGBoost modeli eğitilir.
 Az verili gruplar için genel (fallback) model kullanılır.
 """
 
-import os
+import os, re
 import json
 import logging
 from pathlib import Path
 
 import numpy as np
+import numpy as _np
 import pandas as pd
 import joblib
 import shap
@@ -19,14 +20,14 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
-from settings import MIN_SAMPLES_FOR_GROUP_MODEL
+from settings import MIN_SAMPLES_FOR_GROUP_MODEL, GROUP_MAX_MEDIAN_DEVIATION_PCT
 
 logger = logging.getLogger(__name__)
 
 # ── Sabitler ───────────────────────────────────────────────────────────────
 
 CATEGORICAL_COLS = ["fueloil", "gear", "car_status", "car_type",
-                    "drive", "color", "plate", "whois"]
+                    "drive", "color"]
 
 # Grup modeli için marka/seri/model encode edilmez (zaten filtrelenmiş)
 CATEGORICAL_COLS_GENERAL = ["marka", "seri", "model"] + CATEGORICAL_COLS
@@ -78,16 +79,15 @@ XGBOOST_PARAMS_SMALL = {   # Az verili gruplar için daha basit model
 }
 
 
-"""def _group_key(marka, seri, model):
-    "Grup anahtarı oluştur."
-    parts = [str(x).strip().lower().replace(" ", "_")
-             for x in [marka, seri, model] if x]
-    return "__".join(parts)"""
-
 def _group_key(marka, seri, model=None):
     parts = [str(x).strip().lower().replace(" ", "_")
              for x in [marka, seri] if x]
-    return "__".join(parts)
+    key = "__".join(parts)
+
+    # Donanım segmentini (tier) anahtara kat — model verilmişse
+    if model is not None and key:
+        key = f"{key}__{_tier(model, marka)}"
+    return key
 
 
 def _load_damage_config() -> dict:
@@ -191,6 +191,57 @@ def _parse_damage_score(val, part_name=None):
         base   = base * weight
     return base
 
+def _extract_version_features(model_str):
+    """Versiyon/donanım string'inden yapısal özellik çıkarır (araclar ve filo için AYNI).
+    Döner: (engine_liters, trim_number, is_amg_perf, is_awd, is_diesel)."""
+    s = str(model_str or "").strip()
+    su = s.upper()
+    mlit = re.search(r"(\d\.\d{1,2})", s)
+    engine_liters = float(mlit.group(1)) if mlit else 0.0
+    rest = su.replace(mlit.group(1), " ") if mlit else su
+    trim = 0
+    for tok in re.findall(r"\d+", rest):
+        n = int(tok)
+        if 30 <= n <= 999 and not (1990 <= n <= 2035):
+            trim = n
+            break
+    is_amg_perf = 1 if re.search(r"\b(43|45|53|55|63|73)\b.*AMG|AMG.*\b(43|45|53|55|63|73)\b", su) else 0
+    is_awd    = 1 if re.search(r"4\s?MATIC|XDRIVE|QUATTRO|4X4|4WD|4\s?MOTION|\bAWD\b", su) else 0
+    is_diesel = 1 if re.search(r"\bD\b|DCI|CDI|TDI|HDI|BLUEHDI|CRDI|BLUETEC", su) else 0
+    return engine_liters, trim, is_amg_perf, is_awd, is_diesel
+
+
+
+# Sayısal donanım kodu kullanan markalar (180/300/320 gibi). Diğerlerinde "90" gibi
+# sayılar beygir/torktur, donanım kodu değil — o yüzden onlarda tier hep "std".
+TIER_BRANDS = ("mercedes",)
+
+def _tier(model_str, marka=None):
+    """Donanım fiyat segmenti: amg / ust / baz / std. Sadece TIER_BRANDS'te trim'e bakar."""
+    m = str(marka or "").strip().lower()
+    if not any(b in m for b in TIER_BRANDS):
+        return "std"
+    _, trim, perf, _, _ = _extract_version_features(model_str)
+    if perf:
+        return "amg"
+    if trim >= 280:
+        return "ust"
+    if trim > 0:
+        return "baz"
+    return "std"
+
+
+
+def _norm_drive(raw):
+    """Çekiş yazımını 3 kategoriye indirir: onden / awd / arka (7 yazım -> 3)."""
+    ss = str(raw or "").lower()
+    if any(x in ss for x in ["4x4", "4wd", "awd", "4 çeker", "4 ceker",
+                             "sürekli", "surekli", "quattro", "xdrive",
+                             "4matic", "4 matic", "4motion"]):
+        return "awd"
+    if "arka" in ss:
+        return "arka"
+    return "onden"   # önden çekiş / 4x2 / boş / bilinmeyen -> önden (baskın)
 
 def _to_int_flag(series):
     def _conv(v):
@@ -261,6 +312,12 @@ class GroupModel:
             axis=1
         )
 
+        # Çekiş yazımını 3 kategoriye indir (onden/awd/arka); eksikse önden varsay
+        if "drive" in df.columns:
+            df["drive"] = df["drive"].apply(_norm_drive)
+        else:
+            df["drive"] = "onden"
+
         # Grup modeli için marka/seri/model encode etme — zaten filtrelenmiş
         for col in CATEGORICAL_COLS:
             if col not in df.columns:
@@ -289,10 +346,22 @@ class GroupModel:
                 df[col].median() if fit else 0
             )
 
+        # Versiyon/donanım özellikleri — model string'inden (araclar ve filo için tutarlı)
+        if "model" in df.columns:
+            _vf = df["model"].apply(_extract_version_features)
+        else:
+            _vf = pd.Series([(0.0, 0, 0, 0, 0)] * len(df), index=df.index)
+        df["engine_liters"] = _vf.apply(lambda t: t[0]).astype(float)
+        df["trim_number"]   = _vf.apply(lambda t: t[1]).astype(float)
+        df["is_amg_perf"]   = _vf.apply(lambda t: t[2]).astype(int)
+        df["is_awd"]        = _vf.apply(lambda t: t[3]).astype(int)
+        df["is_diesel_ver"] = _vf.apply(lambda t: t[4]).astype(int)
+
         feature_cols = (
             [c + "_enc" for c in CATEGORICAL_COLS] +
             NUMERIC_COLS +
             ["vehicle_age", "km_per_year", "log_km",
+             "engine_liters", "trim_number", "is_amg_perf", "is_awd", "is_diesel_ver",
              "damage_total_score", "damage_count", "damage_ratio",
              "has_changed", "critical_damage_score"] +
             damage_score_cols +
@@ -327,6 +396,8 @@ class GroupModel:
                 quantile_alpha=0.05, **{k:v for k,v in params.items() if k!="n_estimators"}, n_estimators=300)
             self.model_upper = XGBRegressor(objective="reg:quantileerror",
                 quantile_alpha=0.95, **{k:v for k,v in params.items() if k!="n_estimators"}, n_estimators=300)
+            self.model_lower.fit(X_train, y_train)
+            self.model_upper.fit(X_train, y_train)
         else:
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.15, random_state=42)
             self.model = XGBRegressor(objective="reg:squarederror", **XGBOOST_PARAMS)
@@ -483,18 +554,37 @@ class VehiclePricePredictor:
         group_metrics = {}
         self.group_models = {}
 
-        # Her grup için ayrı model
+        
         for gkey, gdf in df.groupby("_group"):
             if len(gdf) < MIN_SAMPLES_FOR_GROUP_MODEL:
-                logger.info(f"  [{gkey}] {len(gdf)} araç — yetersiz, genel modele bırakılır")
+                logger.info(f"  [{gkey}] {len(gdf)} araç — yetersiz, medyana bırakılır")
                 continue
             logger.info(f"  [{gkey}] {len(gdf)} araç — eğitiliyor...")
             gm = GroupModel(gkey)
             metrics = gm.train(gdf)
-            if metrics:
-                self.group_models[gkey] = gm
-                group_metrics[gkey] = metrics
-                logger.info(f"    RMSE:{metrics['rmse']:.4f}  R²:{metrics['r2']:.4f}")
+            if not metrics:
+                continue
+
+            # ── Kalite kontrolü: tahmin medyanı gerçek medyandan çok sapıyorsa reddet ──
+            try:
+                gercek_med = float(_np.median(gdf["price"].astype(float)))
+                orn = gdf if len(gdf) <= 200 else gdf.sample(200, random_state=42)
+                tahminler = []
+                for _, row in orn.iterrows():
+                    tahminler.append(gm.predict(row.to_dict())["predicted_price"])
+                tahmin_med = float(_np.median(tahminler))
+                sapma = abs(tahmin_med - gercek_med) / max(gercek_med, 1) * 100
+            except Exception:
+                sapma = 0.0
+
+            if sapma > GROUP_MAX_MEDIAN_DEVIATION_PCT:
+                logger.info(f"    ✗ REDDEDİLDİ — medyan sapması %{sapma:.0f} "
+                            f"(gerçek {gercek_med:,.0f} vs tahmin {tahmin_med:,.0f}); medyana bırakılır")
+                continue
+
+            self.group_models[gkey] = gm
+            group_metrics[gkey] = metrics
+            logger.info(f"    RMSE:{metrics['rmse']:.4f}  R²:{metrics['r2']:.4f}  (sapma %{sapma:.0f})")
 
         # Genel fallback model (tüm veri)
         logger.info(f"Genel fallback modeli eğitiliyor ({len(df)} araç)...")

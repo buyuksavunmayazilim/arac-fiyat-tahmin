@@ -12,6 +12,7 @@ import numpy as np
 from app import db
 from app.models import Vehicle, PriceHistory, QueryHistory, ModelMetadata, FleetVehicle
 from ml.predictor import get_predictor
+from app.prediction import resolve_prediction
 
 from settings import (
     BFL_ALLOWED_DURUMLAR,
@@ -19,6 +20,7 @@ from settings import (
     BFL_MIN_COMPARABLE_LISTINGS,
     B2B_FACTOR,
     map_fleet_naming,
+    map_fuel,
 )
 
 api_bp = Blueprint("api", __name__)
@@ -662,11 +664,11 @@ def _degerlendir_guven(model_group, ilan_sayisi):
         "benzer_ilan_sayisi": ilan_sayisi,
     }
 
-def _bfl_guven_listing(predictor, marka, seri, model_yili):
+def _bfl_guven_listing(predictor, marka, seri, model, model_yili):
     """Listeleme anında (tahmin çalıştırmadan) güven değerlendirmesi."""
     from ml.predictor import _group_key
     marka, seri = map_fleet_naming(marka, seri)
-    gkey = _group_key(marka, seri)
+    gkey = _group_key(marka, seri, model)
     has_group = bool(
         predictor and predictor.is_loaded()
         and gkey in getattr(predictor, "group_models", {})
@@ -865,7 +867,7 @@ def bfl_vehicles():
     out = []
     for vehicle in vehicles:
         vd = vehicle.to_dict()
-        _key = (vd.get("marka"), vd.get("seri"), vd.get("model_yili"))
+        _key = (vd.get("marka"), vd.get("seri"), vd.get("model"), vd.get("model_yili"))
         if _key not in _guven_cache:
             _guven_cache[_key] = _bfl_guven_listing(predictor, *_key)
         g = _guven_cache[_key]
@@ -890,6 +892,12 @@ def _normalize_for_prediction(filo_arac: dict) -> dict:
     
     _marka, _seri = map_fleet_naming(filo_arac.get("marka"), filo_arac.get("seri"))
 
+    # Çekiş: drive_type dolu → kullan; boşsa versiyonda AWD ipucu → 4x4; yoksa önden çekiş
+    from ml.predictor import _extract_version_features
+    _raw_drive = filo_arac.get("cekis_tipi")
+    if not _raw_drive:
+        _, _, _, _awd, _ = _extract_version_features(filo_arac.get("model"))
+        _raw_drive = "4x4" if _awd else "Önden Çekiş"
 
     return {
         "marka":      title_case(_marka),
@@ -897,9 +905,11 @@ def _normalize_for_prediction(filo_arac: dict) -> dict:
         "model":      filo_arac.get("model"),
         "model_year": filo_arac.get("model_yili"),
         "km":         filo_arac.get("son_km") or 0,
-        "fueloil":    title_case(filo_arac.get("yakit_tipi")),
+        "fueloil":    map_fuel(filo_arac.get("yakit_tipi")),
         "gear":       title_case(filo_arac.get("vites_tipi")),
-        "damage_registered": False,   # BFL'de hasar dikkate alınmaz
+        "car_status": "İkinci El",
+        "drive":      _raw_drive,
+        "damage_registered": False,
     }
 
 
@@ -914,7 +924,6 @@ def bfl_predict(filo_id):
     if not predictor.is_loaded():
         return jsonify({"error": "Model henüz eğitilmemiş"}), 503
 
-    # Faiz oranı kullanıcıdan
     body = request.get_json(silent=True) or {}
     annual_rate = float(body.get("annual_rate_pct", 0) or 0)
 
@@ -922,72 +931,190 @@ def bfl_predict(filo_id):
     pred_input = _normalize_for_prediction(filo_dict)
 
     try:
-        result = predictor.predict(pred_input)
+        result = resolve_prediction(pred_input)
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": f"Tahmin hatası: {str(e)}"}), 500
 
-    b2c_fiyat = result["predicted_price"]
-    b2b_fiyat = b2c_fiyat * B2B_FACTOR
     alis_fiyati = filo_dict.get("alis_fiyati") or 0
+    b2c_fiyat = result["predicted_price"]
 
+    # Veri yetersiz — fiyat üretilemedi
+    if b2c_fiyat is None:
+        return jsonify({
+            "success": True,
+            "arac": filo_dict,
+            "insufficient_data": True,
+            "prediction_source": result.get("prediction_source", "none"),
+            "model_group": result.get("model_group"),
+            "alis_fiyati": alis_fiyati,
+            "tahmini_satis": None, "b2c_fiyat": None, "b2b_fiyat": None,
+            "price_lower": None, "price_upper": None,
+            "kar": None, "kar_pct": None,
+            "b2c_kar": None, "b2c_kar_pct": None,
+            "b2b_kar": None, "b2b_kar_pct": None,
+            "valor": None, "annual_rate_pct": annual_rate,
+            "dusuk_guven": True,
+            "guven_sebebi": result.get("guven_sebebi"),
+            "benzer_ilan_sayisi": result.get("benzer_ilan_sayisi", 0),
+        })
+
+    b2b_fiyat = b2c_fiyat * B2B_FACTOR
     b2c_kar = b2c_fiyat - alis_fiyati if alis_fiyati else None
-    b2c_kar_pct = (
-        b2c_kar / alis_fiyati * 100
-        if alis_fiyati and b2c_kar is not None
-        else None
-    )
-
+    b2c_kar_pct = (b2c_kar / alis_fiyati * 100 if alis_fiyati and b2c_kar is not None else None)
     b2b_kar = b2b_fiyat - alis_fiyati if alis_fiyati else None
-    b2b_kar_pct = (
-        b2b_kar / alis_fiyati * 100
-        if alis_fiyati and b2b_kar is not None
-        else None
-    )
+    b2b_kar_pct = (b2b_kar / alis_fiyati * 100 if alis_fiyati and b2b_kar is not None else None)
 
-    # Valör fiyatlandırma (faiz oranı verildiyse)
     valor = _calc_valor_pricing(b2c_fiyat, annual_rate, filo_dict.get("alis_tarihi")) if annual_rate > 0 else None
-    
-    _mk, _sr = map_fleet_naming(filo_dict.get("marka"), filo_dict.get("seri"))
-    _guven = _degerlendir_guven(
-        result.get("model_group"),
-        _count_comparable_listings(_mk, _sr, filo_dict.get("model_yili")),
-    )
 
     return jsonify({
         "success": True,
         "arac": filo_dict,
-
+        "insufficient_data": False,
         "tahmini_satis": round(b2c_fiyat, -3),
         "b2c_fiyat": round(b2c_fiyat, -3),
         "b2b_fiyat": round(b2b_fiyat, -3),
-
         "price_lower": result["price_lower"],
         "price_upper": result["price_upper"],
         "alis_fiyati": alis_fiyati,
-
         "kar": round(b2c_kar, -3) if b2c_kar is not None else None,
         "kar_pct": round(b2c_kar_pct, 1) if b2c_kar_pct is not None else None,
-
         "b2c_kar": round(b2c_kar, -3) if b2c_kar is not None else None,
         "b2c_kar_pct": round(b2c_kar_pct, 1) if b2c_kar_pct is not None else None,
-
         "b2b_kar": round(b2b_kar, -3) if b2b_kar is not None else None,
         "b2b_kar_pct": round(b2b_kar_pct, 1) if b2b_kar_pct is not None else None,
-
         "model_group": result.get("model_group", "genel"),
+        "prediction_source": result.get("prediction_source"),
         "valor": valor,
         "annual_rate_pct": annual_rate,
-
-        "dusuk_guven": _guven["dusuk_guven"],
-        "guven_sebebi": _guven["guven_sebebi"],
-        "benzer_ilan_sayisi": _guven["benzer_ilan_sayisi"],
-    })
-    
+        "dusuk_guven": result.get("dusuk_guven", False),
+        "guven_sebebi": result.get("guven_sebebi"),
+        "benzer_ilan_sayisi": result.get("benzer_ilan_sayisi"),
+    })   
 
 
 @api_bp.route("/bfl/predict-batch", methods=["POST"])
 def bfl_predict_batch():
+    """Marka/seri'ye göre tüm araçlar için toplu tahmin + kâr özeti."""
+    data = request.get_json() or {}
+    marka = data.get("marka"); seri = data.get("seri"); durum = data.get("durum")
+    satis_ayi = data.get("satis_ayi", "").strip()
+    annual_rate = float(data.get("annual_rate_pct", 0) or 0)
+
+    predictor = get_predictor()
+    if not predictor.is_loaded():
+        return jsonify({"error": "Model henüz eğitilmemiş"}), 503
+
+    q = FleetVehicle.query.filter(FleetVehicle.plaka_durum.in_(BFL_ALLOWED_DURUMLAR))
+    q = _apply_bfl_filters(q, marka=marka, seri=seri, durum=durum, satis_ayi=satis_ayi)
+    vehicles = q.all()
+
+    results = []
+    toplam_alis = 0; toplam_tahmin = 0; karli = 0; zararli = 0
+
+    for v in vehicles:
+        fd = v.to_dict()
+        pred_input = _normalize_for_prediction(fd)
+        try:
+            r = resolve_prediction(pred_input)
+        except Exception:
+            db.session.rollback()
+            continue
+
+        b2c_fiyat = r["predicted_price"]
+        alis = fd.get("alis_fiyati") or 0
+
+        ortak = {
+            "id": fd["id"], "plaka": fd["plaka"], "plaka_durum": fd["plaka_durum"],
+            "marka": fd["marka"], "seri": fd["seri"], "model": fd["model"],
+            "model_yili": fd["model_yili"], "son_km": fd["son_km"],
+            "yakit_tipi": fd["yakit_tipi"], "vites_tipi": fd["vites_tipi"],
+            "alis_fiyati": alis,
+            "prediction_source": r.get("prediction_source"),
+            "dusuk_guven": r.get("dusuk_guven", False),
+            "guven_sebebi": r.get("guven_sebebi"),
+            "benzer_ilan_sayisi": r.get("benzer_ilan_sayisi"),
+        }
+
+        # Veri yetersiz — sayısız satır
+        if b2c_fiyat is None:
+            ortak.update({
+                "insufficient_data": True, "dusuk_guven": True,
+                "tahmini_satis": None, "b2c_fiyat": None, "b2b_fiyat": None,
+                "price_lower": None, "price_upper": None,
+                "kar": None, "kar_pct": None, "b2c_kar": None, "b2c_kar_pct": None,
+                "b2b_kar": None, "b2b_kar_pct": None, "valor": None,
+            })
+            results.append(ortak)
+            continue
+
+        b2b_fiyat = b2c_fiyat * B2B_FACTOR
+        b2c_kar = b2c_fiyat - alis if alis else None
+        b2c_kar_pct = (b2c_kar / alis * 100 if alis and b2c_kar is not None else None)
+        b2b_kar = b2b_fiyat - alis if alis else None
+        b2b_kar_pct = (b2b_kar / alis * 100 if alis and b2b_kar is not None else None)
+
+        # Parasal toplamlara SADECE güvenilir araçlar (düşük güven/yetersiz hariç)
+        if alis and not r.get("dusuk_guven"):
+            toplam_alis += alis
+            toplam_tahmin += b2c_fiyat
+            if b2c_kar and b2c_kar > 0: karli += 1
+            elif b2c_kar and b2c_kar < 0: zararli += 1
+
+        valor = _calc_valor_pricing(b2c_fiyat, annual_rate, fd.get("alis_tarihi")) if annual_rate > 0 else None
+
+        ortak.update({
+            "insufficient_data": False,
+            "tahmini_satis": round(b2c_fiyat, -3),
+            "b2c_fiyat": round(b2c_fiyat, -3),
+            "b2b_fiyat": round(b2b_fiyat, -3),
+            "price_lower": r["price_lower"], "price_upper": r["price_upper"],
+            "kar": round(b2c_kar, -3) if b2c_kar is not None else None,
+            "kar_pct": round(b2c_kar_pct, 1) if b2c_kar_pct is not None else None,
+            "b2c_kar": round(b2c_kar, -3) if b2c_kar is not None else None,
+            "b2c_kar_pct": round(b2c_kar_pct, 1) if b2c_kar_pct is not None else None,
+            "b2b_kar": round(b2b_kar, -3) if b2b_kar is not None else None,
+            "b2b_kar_pct": round(b2b_kar_pct, 1) if b2b_kar_pct is not None else None,
+            "valor": valor,
+        })
+        results.append(ortak)
+
+    toplam_kar = toplam_tahmin - toplam_alis
+    ort_kar_pct = (toplam_kar / toplam_alis * 100) if toplam_alis else 0
+
+    valor_ozet = None
+    if annual_rate > 0 and results:
+        valorlu_list = [r for r in results if not r.get("dusuk_guven") and r.get("valor") and r["valor"].get("valorlu")]
+        satilabilir_count = sum(1 for r in results if not r.get("dusuk_guven") and r.get("valor") and r["valor"].get("satilabilir"))
+        toplam_hedef = sum(r["valor"]["hedef_satis_fiyati"] for r in valorlu_list)
+        toplam_bugun = sum(r["valor"]["valorlu_bugun_fiyati"] for r in valorlu_list)
+        toplam_indirim = sum(r["valor"]["max_indirim_tl"] for r in valorlu_list)
+        valor_ozet = {
+            "valorlu_arac": len(valorlu_list),
+            "satilabilir_arac": satilabilir_count,
+            "toplam_hedef": round(toplam_hedef, -3),
+            "toplam_bugun": round(toplam_bugun, -3),
+            "toplam_max_indirim": round(toplam_indirim, -3),
+            "ort_indirim_pct": round(toplam_indirim / toplam_hedef * 100, 2) if toplam_hedef else 0,
+        }
+
+    return jsonify({
+        "results": results,
+        "annual_rate_pct": annual_rate,
+        "valor_ozet": valor_ozet,
+        "ozet": {
+            "arac_sayisi": len(results),
+            "veri_yetersiz_arac": sum(1 for r in results if r.get("insufficient_data")),
+            "dusuk_guven_arac": sum(1 for r in results if r.get("dusuk_guven")),
+            "guvenilir_arac": sum(1 for r in results if not r.get("dusuk_guven")),
+            "toplam_alis": round(toplam_alis, -3),
+            "toplam_tahmin": round(toplam_tahmin, -3),
+            "toplam_kar": round(toplam_kar, -3),
+            "ort_kar_pct": round(ort_kar_pct, 1),
+            "karli_arac": karli,
+            "zararli_arac": zararli,
+        }
+    })
     """
     Marka/seri'ye göre tüm araçlar için toplu tahmin + kâr özeti.
     Body: {marka, seri, durum?}

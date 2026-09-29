@@ -33,6 +33,7 @@ class FleetVehicle(db.Model):
     renk        = db.Column("color", db.String(50))
     yakit_tipi  = db.Column("fuel_type", db.String(50))
     vites_tipi  = db.Column("transmission", db.String(50))
+    cekis_tipi_col = db.Column("drive_type", db.String(50))
 
     # ── Kilometre ────────────────────────────────────────────────────────────
     son_km        = db.Column("last_odometer_km", db.Integer)
@@ -62,7 +63,7 @@ class FleetVehicle(db.Model):
             "renk":        self.renk,
             "yakit_tipi":  self.yakit_tipi,
             "vites_tipi":  self.vites_tipi,
-            "cekis_tipi":  None,   # vehicles tablosunda yok
+            "cekis_tipi":  self.cekis_tipi_col,   # vehicles tablosunda yok
             "son_km":      self.son_km,
             "alis_fiyati": float(self.alis_fiyati) if self.alis_fiyati is not None else None,
             "alis_tarihi": self.alis_tarihi.isoformat() if self.alis_tarihi else None,

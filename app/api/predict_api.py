@@ -21,9 +21,10 @@ from ml.predictor import _group_key
 from app import db
 from app.models import Vehicle
 from app.api.routes import _count_comparable_listings, _degerlendir_guven
+from app.prediction import resolve_prediction
 
-from settings import B2B_FACTOR, BFL_MIN_HOLD_DAYS, map_fleet_naming   # merkezi config (settings.py)
-from ml.predictor import DAMAGE_PARTS
+from settings import B2B_FACTOR, BFL_MIN_HOLD_DAYS, map_fleet_naming, map_fuel  # merkezi config (settings.py)
+from ml.predictor import DAMAGE_PARTS, _extract_version_features
 
 predict_api_bp = Blueprint("predict_api", __name__)
 
@@ -114,14 +115,26 @@ def normalize_payload(raw: dict) -> dict:
     if "km" in out:
         out["km"] = _to_int(out.get("km")) or 0
 
-    # Title-case (model motoru büyük/küçük harfe duyarlı)
+    # Marka/seri yazımını araclar formatına çevir
     if out.get("marka"):
         out["marka"], out["seri"] = map_fleet_naming(out.get("marka"), out.get("seri"))
 
-    # Title-case (model motoru büyük/küçük harfe duyarlı)
+    # Yakıt yazımını araclar formatına çevir (Benzin -> Benzinli, Benzin Hybrid -> Hibrit ...)
+    if out.get("fueloil"):
+        out["fueloil"] = map_fuel(out["fueloil"])
+
+    # Title-case (model motoru büyük/küçük harfe duyarlı) — yakıt hariç (map_fuel zaten doğru yazımı verir)
     for f in _TITLE_CASE_FIELDS:
-        if out.get(f):
+        if f != "fueloil" and out.get(f):
             out[f] = _title(out[f])
+
+    # Çekiş: verilmediyse versiyondan türet (AWD ipucu varsa 4x4, yoksa önden çekiş)
+    if not out.get("drive"):
+        _, _, _, _awd, _ = _extract_version_features(out.get("model"))
+        out["drive"] = "4x4" if _awd else "Önden Çekiş"
+
+    # car_status: dış tahminde de ikinci el kabul edilir (araclar'ın %99.6'sı bu)
+    out.setdefault("car_status", "İkinci El")
 
     # Hasar kaydı bayrağı (bool'a çevir)
     dr = out.get("damage_registered", False)
@@ -238,24 +251,44 @@ def v1_predict():
         return jsonify({"error": "Zorunlu alan(lar) eksik: " + ", ".join(eksik)}), 400
 
     try:
-        result = predictor.predict(data)
+        result = resolve_prediction(data)
     except Exception as e:
         return jsonify({"error": f"Tahmin hatası: {str(e)}"}), 500
 
     b2c = result["predicted_price"]
+    input_echo = {
+        "marka": data.get("marka"), "seri": data.get("seri"),
+        "model": data.get("model"), "model_year": data.get("model_year"),
+        "km": data.get("km"), "fueloil": data.get("fueloil"),
+        "gear": data.get("gear"), "drive": data.get("drive"),
+    }
+
+    # Veri yetersiz — fiyat üretilemedi
+    if b2c is None:
+        return jsonify({
+            "success": True,
+            "insufficient_data": True,
+            "predicted_price": None,
+            "price_lower": None, "price_upper": None,
+            "confidence_pct": None,
+            "model_group": result.get("model_group"),
+            "prediction_source": result.get("prediction_source", "none"),
+            "dusuk_guven": True,
+            "guven_sebebi": result.get("guven_sebebi"),
+            "benzer_ilan_sayisi": result.get("benzer_ilan_sayisi", 0),
+            "input": input_echo,
+        })
+
     resp = {
         "success": True,
+        "insufficient_data": False,
         "predicted_price": round(b2c, -3),
         "price_lower": result["price_lower"],
         "price_upper": result["price_upper"],
         "confidence_pct": result.get("confidence_pct"),
         "model_group": result.get("model_group", "genel"),
-        "input": {
-            "marka": data.get("marka"), "seri": data.get("seri"),
-            "model": data.get("model"), "model_year": data.get("model_year"),
-            "km": data.get("km"), "fueloil": data.get("fueloil"),
-            "gear": data.get("gear"),
-        },
+        "prediction_source": result.get("prediction_source"),
+        "input": input_echo,
     }
 
     # Alış fiyatı verildiyse B2C/B2B fiyat + kâr
@@ -276,25 +309,20 @@ def v1_predict():
         resp["valor"] = _calc_valor(b2c, annual_rate, data.get("purchase_invoice_date"))
         resp["annual_rate_pct"] = annual_rate
 
-    # Hasar etkisi — herhangi bir hasar bilgisi verildiyse
+    # Hasar etkisi — sadece grup ML modeli kullanıldıysa (medyan yolunda hasar hesabı yok)
     _has_damage = bool(data.get("damage_registered")) or any(
         data.get(p) not in (None, "", "original-new") for p in DAMAGE_PARTS
     )
-    if _has_damage:
+    if _has_damage and result.get("prediction_source") == "group_model":
         try:
-            resp["damage_effect"] = predictor.damage_counterfactual(data)
+            resp["damage_effect"] = get_predictor().damage_counterfactual(data)
         except Exception:
             resp["damage_effect"] = None
 
-
-    # Güven bayrağı — genel modele düştüyse veya yeterli piyasa verisi yoksa düşük güven
-    _guven = _degerlendir_guven(
-        result.get("model_group"),
-        _count_comparable_listings(data.get("marka"), data.get("seri"), data.get("model_year")),
-    )
-    resp["dusuk_guven"] = _guven["dusuk_guven"]
-    resp["guven_sebebi"] = _guven["guven_sebebi"]
-    resp["benzer_ilan_sayisi"] = _guven["benzer_ilan_sayisi"]
+    # Güven bayrağı — resolve_prediction'dan gelir
+    resp["dusuk_guven"] = result.get("dusuk_guven", False)
+    resp["guven_sebebi"] = result.get("guven_sebebi")
+    resp["benzer_ilan_sayisi"] = result.get("benzer_ilan_sayisi")
 
     return jsonify(resp)
 
@@ -313,16 +341,19 @@ def _supported_pairs():
     groups = getattr(predictor, "group_models", {}) if predictor and predictor.is_loaded() else {}
     if not groups:
         return []
-    rows = (db.session.query(Vehicle.marka, Vehicle.seri)
+    rows = (db.session.query(Vehicle.marka, Vehicle.seri, Vehicle.model)
             .filter(Vehicle.marka.isnot(None), Vehicle.seri.isnot(None),
                     Vehicle.price.isnot(None), Vehicle.price != "")
             .distinct().all())
     out, seen = [], set()
-    for marka, seri in rows:
-        gk = _group_key(marka, seri)
-        if gk in groups and gk not in seen:
-            seen.add(gk)
-            out.append((marka, seri))
+    for marka, seri, model in rows:
+        gk = _group_key(marka, seri, model)   # tier dahil tam anahtar
+        if gk in groups:
+            pair = (marka, seri)              # en az bir tier destekliyse marka+seri listeye girer
+            pair_lc = (str(marka).lower(), str(seri).lower())
+            if pair_lc not in seen:
+                seen.add(pair_lc)
+                out.append(pair)
     return out
 
 
